@@ -236,7 +236,7 @@ def train_model(
 
 def load_model(version: str):
     """Загружает обученную модель для inference."""
-    import xgboost as xgb
+    import xgboost as xgb  # type: ignore[import-not-found]
     artifact_dir = MODELS_DIR / version
     main = xgb.XGBRegressor()
     main.load_model(str(artifact_dir / "main.json"))
@@ -374,7 +374,7 @@ if __name__ == "__main__":
     print(f"  R² test = {trained.metrics.r2_test:.3f}")
     print(f"  MAE test = {trained.metrics.mae_test:.2f} МПа")
     print(f"  Coverage 90% CI = {trained.metrics.coverage_90_ci:.2%}")
-    print(f"\n  Top 5 features by importance:")
+    print("\n  Top 5 features by importance:")
     top = sorted(trained.feature_importance.items(), key=lambda x: -x[1])[:5]
     for f, imp in top:
         print(f"    {f}: {imp:.3f}")
