@@ -20,6 +20,7 @@ uvicorn>=0.24
 
 # LLM agents (опционально — для Critic v2 с LLM-exploratory)
 anthropic>=0.18
+python-dotenv>=1.0
 
 # Dev / tests
 pytest>=7.4

@@ -13,6 +13,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Load .env so ANTHROPIC_API_KEY etc. are available when launched via `streamlit run`
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
 import streamlit as st
 import pandas as pd
 import numpy as np
