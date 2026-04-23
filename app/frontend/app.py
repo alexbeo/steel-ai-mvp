@@ -136,8 +136,12 @@ st.sidebar.metric(
 # Main tabs
 # =========================================================================
 
-tab_design, tab_train, tab_predict, tab_history = st.tabs([
-    "🎯 Дизайн сплава", "🤖 Обучение модели", "📊 Прогноз", "📚 История"
+tab_design, tab_train, tab_predict, tab_deox, tab_history = st.tabs([
+    "🎯 Дизайн сплава",
+    "🤖 Обучение модели",
+    "📊 Прогноз",
+    "🔥 Раскисление",
+    "📚 История",
 ])
 
 
@@ -652,6 +656,231 @@ with tab_predict:
                 c2d.metric("Pcm", f"{df_feat['pcm'].iloc[0]:.3f}")
                 c3d.metric("CEN", f"{df_feat['cen'].iloc[0]:.3f}")
                 c4d.metric("Микролегирование", f"{df_feat['microalloying_sum'].iloc[0]:.4f}")
+
+
+# =========================================================================
+# Tab: Al Deoxidation Calculator (on-line LF advisory)
+# =========================================================================
+
+with tab_deox:
+    st.header("🔥 Раскисление жидкой стали алюминием")
+    st.caption(
+        "Physics-based advisory на базе 3 термодинамических моделей. "
+        "Без ML. Расчёт на каждую плавку."
+    )
+
+    from app.backend.deoxidation import (
+        DEFAULT_MODEL_ID, THERMO_MODELS,
+        compute_al_demand, compute_al_quality, compare_all_models,
+    )
+    from app.backend.steel_classes import load_steel_class
+    from pattern_library.patterns import Phase as _PhaseDx, run_all_patterns as _run_dx
+
+    # Context (active model class → target O_a default)
+    _active_class_id = "pipe_hsla"
+    _target_o_a_default = 10.0
+    if selected_model:
+        try:
+            import json as _json_dx
+            _meta_dx = _json_dx.loads(
+                (PROJECT_ROOT / "models" / selected_model / "meta.json").read_text()
+            )
+            _active_class_id = _meta_dx.get("steel_class", "pipe_hsla")
+            _profile_dx = load_steel_class(_active_class_id)
+            if _profile_dx.target_o_activity_ppm is not None:
+                _target_o_a_default = _profile_dx.target_o_activity_ppm
+        except Exception:
+            pass
+
+    st.markdown(
+        f"**Активный класс**: `{_active_class_id}` · "
+        f"**Target O_a из профиля**: `{_target_o_a_default} ppm`"
+    )
+
+    _model_id = st.selectbox(
+        "Термодинамическая модель",
+        options=list(THERMO_MODELS.keys()),
+        index=list(THERMO_MODELS.keys()).index(DEFAULT_MODEL_ID),
+        format_func=lambda mid: f"{THERMO_MODELS[mid].name} — {THERMO_MODELS[mid].citation}",
+        key="deox_model_id",
+    )
+
+    sub_fwd, sub_inv, sub_cmp = st.tabs([
+        "Сколько Al нужно", "Качество Al по факту", "⚖️ Сравнить модели",
+    ])
+
+    # ──────── Forward ────────
+    with sub_fwd:
+        cf1, cf2 = st.columns(2)
+        o_a_initial = cf1.number_input("O_a измерено, ppm", 0.0, 2000.0, 450.0, step=10.0)
+        T_c = cf2.number_input("T расплава, °C", 1400.0, 1700.0, 1620.0, step=5.0)
+        cf3, cf4 = st.columns(2)
+        mass_t = cf3.number_input("Масса стали, т", 1.0, 500.0, 180.0, step=5.0)
+        target_o_a = cf4.number_input(
+            "Целевой O_a, ppm", 0.5, 1000.0,
+            value=float(_target_o_a_default), step=1.0,
+        )
+        cf5, cf6 = st.columns(2)
+        purity = cf5.number_input("% активного Al", 50.0, 100.0, 100.0, step=1.0)
+        burn_off = cf6.number_input("Угар, %", 0.0, 50.0, 20.0, step=1.0)
+        heat_id = st.text_input("Heat ID (опционально, для audit)", value="")
+
+        if st.button("🧮 Рассчитать", type="primary", key="deox_fwd_btn"):
+            result = compute_al_demand(
+                o_a_initial_ppm=o_a_initial, temperature_C=T_c,
+                steel_mass_ton=mass_t, target_o_a_ppm=target_o_a,
+                al_purity_pct=purity, burn_off_pct=burn_off,
+                model_id=_model_id,
+            )
+            st.session_state["last_deox_result"] = result
+
+            dx_warnings = _run_dx(
+                {
+                    "o_a_initial_ppm": o_a_initial,
+                    "target_o_a_ppm": target_o_a,
+                },
+                phase=_PhaseDx.DEOXIDATION,
+            )
+            for w in dx_warnings:
+                sev = w["severity"]
+                msg = f"**[{sev}] {w['pattern_id']}:** {w['message']}\n\n💡 {w['suggestion']}"
+                if sev == "HIGH":
+                    st.error(msg)
+                elif sev == "MEDIUM":
+                    st.warning(msg)
+                else:
+                    st.info(msg)
+
+            st.divider()
+            if result.al_total_kg > 0:
+                st.subheader(f"💊 Навеска Al: {result.al_total_kg:.1f} кг ({result.al_per_ton:.3f} кг/т)")
+                st.markdown(
+                    f"- Активный Al на реакцию: **{result.al_active_kg:.1f} кг**\n"
+                    f"- Угар: {result.al_burn_off_kg:.1f} кг ({burn_off:.0f}%)\n"
+                    f"- Ожидаемый остаточный O_a: **{result.o_a_expected_ppm:.1f} ppm** (цель)\n"
+                    f"- 💰 Стоимость: **{result.cost_eur:.1f} {result.currency}** "
+                    f"(при {THERMO_MODELS[_model_id].name})"
+                )
+                for w in result.warnings:
+                    st.warning(w)
+            else:
+                st.info("Раскисление не требуется (см. warning выше).")
+
+            if st.button("💾 Сохранить в Decision Log", key="deox_save_fwd"):
+                from dataclasses import asdict as _asdict
+                from decision_log.logger import log_decision
+                log_decision(
+                    phase="deoxidation",
+                    decision=(
+                        f"Al-deox {heat_id or 'без ID'}: "
+                        f"{result.al_total_kg:.1f} кг на {mass_t} т "
+                        f"({result.al_per_ton:.3f} кг/т)"
+                    ),
+                    reasoning=(
+                        f"Model={result.model_id}, "
+                        f"O_a {o_a_initial}→{target_o_a} ppm @ {T_c}°C, "
+                        f"purity={purity}%, burn_off={burn_off}%. "
+                        f"Cost={result.cost_eur:.2f} {result.currency}"
+                    ),
+                    context={"inputs": result.inputs, "result": _asdict(result)},
+                    author="deox_calculator",
+                    tags=["deoxidation", "al_deox", _active_class_id,
+                          heat_id or "no_id"],
+                )
+                st.success("Запись сохранена в Decision Log")
+
+    # ──────── Inverse ────────
+    with sub_inv:
+        st.caption("Плавка уже прошла — оценим эффективное качество поставки Al.")
+        ci1, ci2 = st.columns(2)
+        pre_o_a = ci1.number_input("O_a до, ppm", 0.0, 2000.0, 500.0, step=10.0, key="inv_pre")
+        post_o_a = ci2.number_input("O_a после, ppm", 0.0, 2000.0, 10.0, step=1.0, key="inv_post")
+        ci3, ci4 = st.columns(2)
+        al_added = ci3.number_input("Al добавлено, кг", 0.1, 5000.0, 65.0, step=1.0)
+        T_c_inv = ci4.number_input("T, °C", 1400.0, 1700.0, 1620.0, step=5.0, key="inv_T")
+        ci5, ci6 = st.columns(2)
+        mass_inv = ci5.number_input("Масса стали, т", 1.0, 500.0, 180.0, step=5.0, key="inv_mass")
+        burn_inv = ci6.number_input("Угар (допущение), %", 0.0, 50.0, 20.0, step=1.0, key="inv_burn")
+
+        if st.button("🔍 Оценить качество", type="primary", key="deox_inv_btn"):
+            try:
+                q_result = compute_al_quality(
+                    o_a_before_ppm=pre_o_a, o_a_after_ppm=post_o_a,
+                    al_added_kg=al_added, temperature_C=T_c_inv,
+                    steel_mass_ton=mass_inv, burn_off_pct=burn_inv,
+                    model_id=_model_id,
+                )
+            except ValueError as e:
+                st.error(f"Ошибка ввода: {e}")
+                st.stop()
+
+            dx_warnings_inv = _run_dx(
+                {"effective_purity_pct": q_result.effective_purity_pct},
+                phase=_PhaseDx.DEOXIDATION,
+            )
+            for w in dx_warnings_inv:
+                sev = w["severity"]
+                msg = f"**[{sev}] {w['pattern_id']}:** {w['message']}\n\n💡 {w['suggestion']}"
+                (st.error if sev == "HIGH" else st.warning)(msg)
+
+            st.divider()
+            st.subheader(f"Эффективное активное Al: {q_result.effective_purity_pct:.1f} %")
+            st.markdown(
+                f"- Реально сработал (связал O): **{q_result.effective_active_kg:.1f} кг**\n"
+                f"- Ожидался при 100% чистоте: {q_result.expected_active_kg:.1f} кг\n"
+                f"- Допущение burn_off: {q_result.assumed_burn_off_pct:.0f}%"
+            )
+            for w in q_result.warnings:
+                st.warning(w)
+
+    # ──────── Compare ────────
+    with sub_cmp:
+        st.caption("Запуск всех 3 термодинамических моделей на одних и тех же входах.")
+        cc1, cc2 = st.columns(2)
+        o_a_cmp = cc1.number_input("O_a измерено, ppm", 0.0, 2000.0, 450.0, step=10.0, key="cmp_o_a")
+        T_cmp = cc2.number_input("T, °C", 1400.0, 1700.0, 1620.0, step=5.0, key="cmp_T")
+        cc3, cc4 = st.columns(2)
+        mass_cmp = cc3.number_input("Масса, т", 1.0, 500.0, 180.0, step=5.0, key="cmp_mass")
+        target_cmp = cc4.number_input(
+            "Целевой O_a, ppm", 0.5, 1000.0, float(_target_o_a_default),
+            step=1.0, key="cmp_target",
+        )
+        cc5, cc6 = st.columns(2)
+        purity_cmp = cc5.number_input("% Al", 50.0, 100.0, 100.0, step=1.0, key="cmp_pur")
+        burn_cmp = cc6.number_input("Угар, %", 0.0, 50.0, 20.0, step=1.0, key="cmp_burn")
+
+        if st.button("⚖️ Сравнить все 3 модели", type="primary", key="deox_cmp_btn"):
+            cmp_results = compare_all_models(
+                o_a_initial_ppm=o_a_cmp, temperature_C=T_cmp,
+                steel_mass_ton=mass_cmp, target_o_a_ppm=target_cmp,
+                al_purity_pct=purity_cmp, burn_off_pct=burn_cmp,
+            )
+            df_cmp = pd.DataFrame([{
+                "Модель": THERMO_MODELS[r.model_id].name,
+                "Al, кг": round(r.al_total_kg, 2),
+                "Al, кг/т": round(r.al_per_ton, 4),
+                "O_a, ppm": round(r.o_a_expected_ppm, 1),
+                f"Цена, {r.currency}": round(r.cost_eur, 2),
+            } for r in cmp_results])
+            st.dataframe(df_cmp, hide_index=True, use_container_width=True)
+
+            masses = [r.al_total_kg for r in cmp_results]
+            spread_pct = (max(masses) - min(masses)) / (sum(masses) / 3.0) * 100
+            st.caption(
+                f"Разброс между моделями: ±{spread_pct:.1f} %. "
+                f"Это ожидаемая неопределённость между академическими "
+                f"термодинамическими формулами."
+            )
+
+            chart_df = pd.DataFrame({
+                "Модель": [THERMO_MODELS[r.model_id].name for r in cmp_results],
+                "Al, кг": [r.al_total_kg for r in cmp_results],
+            })
+            chart = alt.Chart(chart_df).mark_bar().encode(
+                x="Модель:N", y="Al, кг:Q",
+                color=alt.Color("Модель:N", legend=None),
+            )
+            st.altair_chart(chart, use_container_width=True)
 
 
 # =========================================================================
