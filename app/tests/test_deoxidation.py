@@ -121,3 +121,65 @@ def test_compute_al_demand_extreme_o_a_warns():
         al_purity_pct=100, burn_off_pct=20,
     )
     assert any("o_a" in w.lower() for w in result.warnings)
+
+
+from app.backend.deoxidation import compare_all_models, compute_al_quality  # noqa: E402
+
+
+def test_compute_al_quality_roundtrip_purity_85():
+    """Forward with purity=85%, then inverse should recover ~85%."""
+    forward = compute_al_demand(
+        o_a_initial_ppm=450, temperature_C=1620,
+        steel_mass_ton=180, target_o_a_ppm=5,
+        al_purity_pct=85, burn_off_pct=20,
+    )
+    inverse = compute_al_quality(
+        o_a_before_ppm=450,
+        o_a_after_ppm=5,
+        al_added_kg=forward.al_total_kg,
+        temperature_C=1620,
+        steel_mass_ton=180,
+        burn_off_pct=20,
+    )
+    assert inverse.effective_purity_pct == pytest.approx(85.0, abs=1.0)
+    assert inverse.model_id == "fruehan_1985"
+
+
+def test_compute_al_quality_warn_on_very_low_purity():
+    # 180 t, 500→100 ppm → ΔO = 72 kg → Al_active ≈ 80.9 kg.
+    # With 200 kg Al added and 20% burn-off, expected_active = 160 kg,
+    # so effective purity ≈ 50.6% — triggers the <70% warning.
+    inverse = compute_al_quality(
+        o_a_before_ppm=500,
+        o_a_after_ppm=100,
+        al_added_kg=200.0,
+        temperature_C=1620,
+        steel_mass_ton=180,
+        burn_off_pct=20,
+    )
+    assert inverse.effective_purity_pct < 70.0
+    assert any("чистот" in w.lower() or "purity" in w.lower()
+               for w in inverse.warnings)
+
+
+def test_compute_al_quality_o_a_after_exceeds_before_raises():
+    with pytest.raises(ValueError, match="after"):
+        compute_al_quality(
+            o_a_before_ppm=100, o_a_after_ppm=200,
+            al_added_kg=50, temperature_C=1620,
+            steel_mass_ton=180, burn_off_pct=20,
+        )
+
+
+def test_compare_all_models_returns_three_results():
+    results = compare_all_models(
+        o_a_initial_ppm=450, temperature_C=1620,
+        steel_mass_ton=180, target_o_a_ppm=5,
+        al_purity_pct=100, burn_off_pct=20,
+    )
+    assert len(results) == 3
+    ids = {r.model_id for r in results}
+    assert ids == {"fruehan_1985", "sigworth_elliott_1974", "hayashi_2013"}
+    masses = [r.al_total_kg for r in results]
+    spread = (max(masses) - min(masses)) / (sum(masses) / 3.0)
+    assert spread < 0.25

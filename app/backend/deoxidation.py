@@ -165,3 +165,84 @@ def compute_al_demand(
         inputs=inputs,
         warnings=warnings,
     )
+
+
+def compute_al_quality(
+    o_a_before_ppm: float,
+    o_a_after_ppm: float,
+    al_added_kg: float,
+    temperature_C: float,
+    steel_mass_ton: float,
+    burn_off_pct: float = 20.0,
+    model_id: str = DEFAULT_MODEL_ID,
+) -> AlQualityResult:
+    """Inverse: infer effective Al purity from observed deoxidation depth."""
+    inputs = {
+        "o_a_before_ppm": o_a_before_ppm,
+        "o_a_after_ppm": o_a_after_ppm,
+        "al_added_kg": al_added_kg,
+        "temperature_C": temperature_C,
+        "steel_mass_ton": steel_mass_ton,
+        "burn_off_pct": burn_off_pct,
+        "model_id": model_id,
+    }
+    warnings: list[str] = []
+
+    if o_a_after_ppm >= o_a_before_ppm:
+        raise ValueError(
+            f"O_a after ({o_a_after_ppm}) >= before ({o_a_before_ppm}) — "
+            f"no deoxidation observed."
+        )
+    if al_added_kg <= 0:
+        raise ValueError("al_added_kg must be positive")
+    if model_id not in THERMO_MODELS:
+        raise ValueError(f"Unknown thermo model: {model_id}")
+
+    delta_o_kg = (o_a_before_ppm - o_a_after_ppm) / 1e6 * steel_mass_ton * 1000.0
+    effective_active_kg = delta_o_kg * AL_TO_O_MASS_RATIO
+    expected_active_kg = al_added_kg * (1.0 - burn_off_pct / 100.0)
+    effective_purity_pct = effective_active_kg / expected_active_kg * 100.0
+
+    if effective_purity_pct < 70.0:
+        warnings.append(
+            f"Эффективная чистота Al = {effective_purity_pct:.1f}% — "
+            f"подозрительно низкая (<70%). Проверьте чушку/лигатуру "
+            f"или пересмотрите допущение burn_off={burn_off_pct}%."
+        )
+
+    return AlQualityResult(
+        effective_purity_pct=effective_purity_pct,
+        effective_active_kg=effective_active_kg,
+        expected_active_kg=expected_active_kg,
+        assumed_burn_off_pct=burn_off_pct,
+        model_id=model_id,
+        inputs=inputs,
+        warnings=warnings,
+    )
+
+
+def compare_all_models(
+    o_a_initial_ppm: float,
+    temperature_C: float,
+    steel_mass_ton: float,
+    target_o_a_ppm: float,
+    al_purity_pct: float = 100.0,
+    burn_off_pct: float = 20.0,
+    al_price_per_kg: float = 2.40,
+    currency: str = "EUR",
+) -> list[DeoxidationResult]:
+    """Run compute_al_demand against all 3 thermo models — for compare-UI."""
+    return [
+        compute_al_demand(
+            o_a_initial_ppm=o_a_initial_ppm,
+            temperature_C=temperature_C,
+            steel_mass_ton=steel_mass_ton,
+            target_o_a_ppm=target_o_a_ppm,
+            al_purity_pct=al_purity_pct,
+            burn_off_pct=burn_off_pct,
+            model_id=mid,
+            al_price_per_kg=al_price_per_kg,
+            currency=currency,
+        )
+        for mid in ("fruehan_1985", "sigworth_elliott_1974", "hayashi_2013")
+    ]
