@@ -140,6 +140,62 @@ def save_sample_dataset(output_path: Path | None = None, n: int = 2500) -> Path:
     return output_path
 
 
+def generate_synthetic_en10083_qt_dataset(
+    n_samples: int = 2000, random_seed: int = 42
+) -> pd.DataFrame:
+    """
+    EN 10083-2 Q&T carbon steels (C22/C35/C45/C60).
+
+    Empirical physical model:
+    - HRC_quenched = 20 + 85*C + 3*ln(Mn+0.5) − 0.05*thickness_mm
+    - HRC_tempered = HRC_quenched − 0.4*((temper_T−150)/10)*ln(1 + temper_t/30)
+    - tensile_strength ≈ 34.5*HRC*10 МПа (empirical Rockwell→UTS relation)
+    """
+    rng = np.random.default_rng(random_seed)
+    c  = rng.uniform(0.18, 0.65, n_samples)
+    si = rng.uniform(0.15, 0.40, n_samples)
+    mn = rng.uniform(0.40, 0.80, n_samples)
+    p  = rng.uniform(0.0, 0.035, n_samples)
+    s  = rng.uniform(0.0, 0.035, n_samples)
+    cr = rng.uniform(0.0, 0.40, n_samples)
+    austenit_T = rng.uniform(820.0, 900.0, n_samples)
+    temper_T   = rng.uniform(150.0, 650.0, n_samples)
+    temper_t   = rng.uniform(30.0, 180.0, n_samples)
+    thick_mm   = rng.uniform(10.0, 100.0, n_samples)
+
+    hrc_q = 20 + 85 * c + 3 * np.log(mn + 0.5) - 0.05 * thick_mm
+    hrc_q = np.clip(hrc_q, 20, 65)
+    temper_loss = ((temper_T - 150) / 10) * np.log1p(temper_t / 30)
+    hrc = hrc_q - 0.4 * temper_loss
+    hrc = np.clip(hrc + rng.normal(0, 1.5, n_samples), 15, 65)
+    tensile = 34.5 * hrc * 10 + rng.normal(0, 50, n_samples)
+    tensile = np.clip(tensile, 400, 1600)
+
+    campaign_id = rng.integers(1, 50, n_samples)
+    heat_date = pd.date_range("2024-01-01", periods=n_samples, freq="2h")
+
+    return pd.DataFrame({
+        "c_pct": c, "si_pct": si, "mn_pct": mn,
+        "p_pct": p, "s_pct": s, "cr_pct": cr,
+        "austenitizing_temp": austenit_T,
+        "tempering_temp": temper_T,
+        "tempering_time_min": temper_t,
+        "section_thickness_mm": thick_mm,
+        "hardness_hrc": hrc,
+        "tensile_strength_mpa": tensile,
+        "campaign_id": campaign_id,
+        "heat_date": heat_date,
+    })
+
+
+def save_sample_dataset_en10083_qt(path: Path | None = None) -> Path:
+    """Symmetric to save_sample_dataset() but for Q&T class."""
+    path = path or (DATA_DIR / "hsla_en10083_qt_synthetic.parquet")
+    df = generate_synthetic_en10083_qt_dataset()
+    df.to_parquet(path, index=False)
+    return path
+
+
 # =========================================================================
 # Clean and validate
 # =========================================================================

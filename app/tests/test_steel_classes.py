@@ -1,0 +1,88 @@
+"""Unit tests for multi-class steel support."""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+
+from app.backend.steel_classes import (
+    AVAILABLE_CLASS_IDS,
+    SteelClassProfile,
+    available_steel_classes,
+    compute_features_for_class,
+    get_synthetic_generator,
+    load_steel_class,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_load_pipe_hsla_profile():
+    p = load_steel_class("pipe_hsla")
+    assert p.id == "pipe_hsla"
+    assert p.standard.startswith("API 5L")
+    assert "c_pct" in p.feature_set
+    assert "nb_pct" in p.feature_set
+    assert p.physical_bounds["c_pct"] == [0.04, 0.12]
+    assert "yield_strength_mpa" in p.target_ids()
+
+
+def test_load_en10083_profile():
+    p = load_steel_class("en10083_qt")
+    assert p.id == "en10083_qt"
+    assert p.standard == "EN 10083-2"
+    assert "tempering_temp" in p.feature_set
+    assert "section_thickness_mm" in p.feature_set
+    assert "nb_pct" not in p.feature_set
+    assert p.physical_bounds["c_pct"] == [0.18, 0.65]
+    assert "hardness_hrc" in p.target_ids()
+
+
+def test_available_steel_classes_registry():
+    profiles = available_steel_classes()
+    assert len(profiles) == 2
+    ids = {p.id for p in profiles}
+    assert ids == set(AVAILABLE_CLASS_IDS)
+    for p in profiles:
+        assert isinstance(p, SteelClassProfile)
+
+
+def test_synthetic_generator_en10083_qt_physical_sanity():
+    gen = get_synthetic_generator("en10083_qt")
+    df = gen(n_samples=500, random_seed=1)
+
+    for col in ("c_pct", "mn_pct", "tempering_temp",
+                "section_thickness_mm", "hardness_hrc",
+                "tensile_strength_mpa", "campaign_id", "heat_date"):
+        assert col in df.columns, f"missing {col}"
+
+    assert df["c_pct"].between(0.18, 0.65).all()
+    assert df["tempering_temp"].between(150, 650).all()
+    assert df["hardness_hrc"].between(15, 65).all()
+
+    hard_mask = (df["c_pct"] > 0.55) & (df["tempering_temp"] < 250)
+    soft_mask = (df["c_pct"] < 0.25) & (df["tempering_temp"] > 550)
+    if hard_mask.sum() > 10 and soft_mask.sum() > 10:
+        assert df.loc[hard_mask, "hardness_hrc"].mean() > \
+               df.loc[soft_mask, "hardness_hrc"].mean() + 5
+
+
+def test_compute_features_for_class_passthrough_for_qt():
+    df = pd.DataFrame({"c_pct": [0.4], "mn_pct": [0.6]})
+    out = compute_features_for_class(df, "en10083_qt")
+    assert list(out.columns) == ["c_pct", "mn_pct"]
+
+
+def test_compute_features_for_class_adds_derived_for_hsla():
+    df = pd.DataFrame({
+        "c_pct": [0.08], "mn_pct": [1.5], "si_pct": [0.3],
+        "p_pct": [0.015], "s_pct": [0.005], "cr_pct": [0.1],
+        "ni_pct": [0.1], "mo_pct": [0.02], "cu_pct": [0.2],
+        "al_pct": [0.03], "v_pct": [0.03], "nb_pct": [0.04],
+        "ti_pct": [0.02], "n_ppm": [50],
+        "rolling_finish_temp": [820], "cooling_rate_c_per_s": [18],
+    })
+    out = compute_features_for_class(df, "pipe_hsla")
+    assert "cev_iiw" in out.columns
+    assert "pcm" in out.columns
