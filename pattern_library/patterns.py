@@ -13,8 +13,9 @@ Critic-агент импортирует эту библиотеку и прог
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
-from typing import Callable, Any
+from typing import Callable
 import numpy as np
 
 
@@ -281,7 +282,7 @@ def _check_i01_inverse_bounds_within_training(ctx: dict) -> CheckResult:
     if violations:
         return CheckResult(
             True,
-            message=f"Optimization bounds выходят за training distribution более чем на 10%: "
+            message="Optimization bounds выходят за training distribution более чем на 10%: "
                     + "; ".join(violations),
         )
     return CheckResult(False)
@@ -328,6 +329,105 @@ def _check_v01_tenant_validation(ctx: dict) -> CheckResult:
             True,
             message="Validation запускается в production без загрузки tenant_config. "
                     "Generic ограничения не отражают реалии АКОС конкретного клиента.",
+        )
+    return CheckResult(False)
+
+
+# =========================================================================
+# C — Cost-optimization patterns
+# =========================================================================
+
+_FERROALLOY_RANGES = {
+    "FeNb-65": ("Nb", 0.55, 0.75),
+    "FeMn-80": ("Mn", 0.70, 0.88),
+    "FeSi-75": ("Si", 0.70, 0.80),
+    "FeCr-HC": ("Cr", 0.55, 0.70),
+    "FeV-50":  ("V",  0.40, 0.60),
+    "FeTi-70": ("Ti", 0.65, 0.75),
+    "FeMo":    ("Mo", 0.55, 0.70),
+    "FeNi":    ("Ni", 0.20, 0.40),
+}
+
+
+def _check_c01_snapshot_age(ctx: dict) -> CheckResult:
+    meta = ctx.get("price_snapshot_meta")
+    if not meta:
+        return CheckResult(False)
+    try:
+        snap_date = date.fromisoformat(meta["date"])
+    except (KeyError, TypeError, ValueError):
+        return CheckResult(False)
+    age_days = (date.today() - snap_date).days
+    if age_days > 30:
+        return CheckResult(
+            True,
+            message=f"Прайс от {snap_date} старше 30 дней ({age_days} дн.). "
+                    f"Актуализируйте перед презентацией/продакшеном.",
+            details={"age_days": age_days},
+        )
+    return CheckResult(False)
+
+
+def _check_c02_ferroalloy_content(ctx: dict) -> CheckResult:
+    materials = ctx.get("snapshot_materials") or []
+    violations = []
+    for m in materials:
+        if m.get("kind") != "ferroalloy":
+            continue
+        rule = _FERROALLOY_RANGES.get(m["id"])
+        if not rule:
+            continue
+        elem, lo, hi = rule
+        content = (m.get("element_content") or {}).get(elem)
+        if content is None:
+            continue
+        if content < lo or content > hi:
+            violations.append(
+                f"{m['id']} содержит {elem}={content:.2f} (допустимо {lo}-{hi})"
+            )
+    if violations:
+        return CheckResult(
+            True,
+            message="Физически невозможное содержание в ферросплаве: "
+                    + "; ".join(violations),
+        )
+    return CheckResult(False)
+
+
+def _check_c03_corrupt_breakdown(ctx: dict) -> CheckResult:
+    samples = ctx.get("cost_breakdown_samples") or []
+    anomalies = []
+    for i, b in enumerate(samples):
+        if not isinstance(b, dict):
+            continue
+        for c in b.get("contributions", []):
+            if c.get("contribution_per_ton", 0) < 0:
+                anomalies.append(f"#{i}: отрицательный вклад {c['material_id']}")
+            if c.get("mass_kg_per_ton_steel", 0) > 1000.0:
+                anomalies.append(f"#{i}: масса {c['material_id']} > 1000 кг/т")
+    if anomalies:
+        return CheckResult(
+            True,
+            message="Баг в compute_cost: " + "; ".join(anomalies[:5]),
+        )
+    return CheckResult(False)
+
+
+def _check_c04_missing_element_in_snapshot(ctx: dict) -> CheckResult:
+    required = set(ctx.get("design_required_elements") or [])
+    if not required:
+        return CheckResult(False)
+    materials = ctx.get("snapshot_materials") or []
+    covered: set[str] = set()
+    for m in materials:
+        covered.update((m.get("element_content") or {}).keys())
+    missing = sorted(required - covered)
+    if missing:
+        return CheckResult(
+            True,
+            message=f"Элементы {missing} присутствуют в design space, "
+                    f"но не покрыты прайс-снимком.",
+            details={"missing": missing},
         )
     return CheckResult(False)
 
@@ -471,6 +571,34 @@ PATTERNS: list[Pattern] = [
         description="Production validation без tenant-specific constraints",
         check=_check_v01_tenant_validation,
         suggestion="Загрузить tenant_config. В MVP-демо — явно показать disclaimer.",
+    ),
+    Pattern(
+        id="C01", title="Устаревший прайс-снимок",
+        phase=Phase.INVERSE_DESIGN, severity=Severity.MEDIUM,
+        description="Snapshot старше 30 дней",
+        check=_check_c01_snapshot_age,
+        suggestion="Обновите snapshot перед продакшеном.",
+    ),
+    Pattern(
+        id="C02", title="Физически невозможное содержание ферросплава",
+        phase=Phase.INVERSE_DESIGN, severity=Severity.HIGH,
+        description="element_content в ферросплаве вне физического диапазона",
+        check=_check_c02_ferroalloy_content,
+        suggestion="Проверьте ввод element_content, сверьте со справочником.",
+    ),
+    Pattern(
+        id="C03", title="Некорректный CostBreakdown",
+        phase=Phase.INVERSE_DESIGN, severity=Severity.HIGH,
+        description="В contributions есть отрицательный вклад или масса > 1000 кг/т",
+        check=_check_c03_corrupt_breakdown,
+        suggestion="Баг в compute_cost или в парсинге snapshot.",
+    ),
+    Pattern(
+        id="C04", title="Элемент не покрыт прайс-снимком",
+        phase=Phase.INVERSE_DESIGN, severity=Severity.HIGH,
+        description="design_required_elements содержит элемент без материала",
+        check=_check_c04_missing_element_in_snapshot,
+        suggestion="Добавьте соответствующий ферросплав/чистый материал в snapshot.",
     ),
 ]
 

@@ -1,7 +1,7 @@
 """Unit tests for cost_model."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,7 @@ from app.backend.cost_model import (
     load_snapshot, save_snapshot, seed_snapshot,
     validate_snapshot, required_elements_for_design,
 )
+from pattern_library.patterns import run_all_patterns, Phase
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -250,3 +251,75 @@ def test_full_seed_covers_all_hsla_design_elements():
         snapshot, required_elements_for_design(VARIABLE_BOUNDS_HSLA)
     )
     assert missing == []
+
+
+def _ctx_for_inverse_with_snapshot(snapshot: PriceSnapshot) -> dict:
+    from dataclasses import asdict
+    return {
+        "phase": "inverse_design",
+        "pareto_size": 10,
+        "objectives_normalized": True,
+        "n_objectives": 3,
+        "variable_bounds": {"nb_pct": [0.0, 0.06]},
+        "training_variable_ranges": {"nb_pct": [0.0, 0.06]},
+        # New cost-related context keys:
+        "price_snapshot_meta": {
+            "date": snapshot.date.isoformat(),
+            "currency": snapshot.currency,
+            "source": snapshot.source,
+            "n_materials": len(snapshot.materials),
+        },
+        "snapshot_materials": [asdict(m) for m in snapshot.materials.values()],
+        "cost_breakdown_samples": [],
+    }
+
+
+def test_pattern_c01_stale_snapshot():
+    old_snap = PriceSnapshot(
+        date=date.today() - timedelta(days=45),
+        currency="RUB",
+        materials=_full_seed_rub().materials,
+    )
+    warnings = run_all_patterns(
+        _ctx_for_inverse_with_snapshot(old_snap), phase=Phase.INVERSE_DESIGN
+    )
+    ids = {w["pattern_id"] for w in warnings}
+    assert "C01" in ids
+
+
+def test_pattern_c02_ferroalloy_physical_range():
+    bad = _full_seed_rub()
+    bad.materials["FeNb-65"] = Material(
+        "FeNb-65", "ferroalloy", 3600.0, {"Nb": 0.90, "Fe": 0.10}
+    )
+    warnings = run_all_patterns(
+        _ctx_for_inverse_with_snapshot(bad), phase=Phase.INVERSE_DESIGN
+    )
+    ids = {w["pattern_id"] for w in warnings}
+    assert "C02" in ids
+
+
+def test_pattern_c03_corrupt_breakdown():
+    ctx = _ctx_for_inverse_with_snapshot(_full_seed_rub())
+    ctx["cost_breakdown_samples"] = [{
+        "total_per_ton": -100.0,
+        "contributions": [{
+            "material_id": "FeNb-65",
+            "mass_kg_per_ton_steel": 2000.0,      # > 1000 → corrupt
+            "price_per_kg": 3600.0,
+            "contribution_per_ton": -50.0,         # < 0 → corrupt
+        }],
+        "mode": "full",
+        "currency": "RUB",
+    }]
+    warnings = run_all_patterns(ctx, phase=Phase.INVERSE_DESIGN)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "C03" in ids
+
+
+def test_pattern_c04_element_missing_in_snapshot():
+    ctx = _ctx_for_inverse_with_snapshot(_rub_seed())  # no FeMo
+    ctx["design_required_elements"] = ["Mn", "Nb", "Mo"]
+    warnings = run_all_patterns(ctx, phase=Phase.INVERSE_DESIGN)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "C04" in ids
