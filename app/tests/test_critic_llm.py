@@ -109,3 +109,52 @@ def test_system_prompt_has_cache_control():
     assert isinstance(kwargs["system"], list)
     assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert kwargs["tool_choice"] == {"type": "tool", "name": "report_observations"}
+
+
+def test_api_error_returns_empty_list(caplog):
+    client = MagicMock()
+    client.messages.create.side_effect = ConnectionError("network down")
+    critic = LLMCritic(client=client)
+
+    with caplog.at_level("WARNING", logger="app.backend.critic_llm"):
+        result = critic.review_training({"r2_train": 0.9, "r2_val": 0.85})
+
+    assert result == []
+    assert any("API call failed" in r.message for r in caplog.records)
+
+
+def test_response_without_tool_use_returns_empty_list(caplog):
+    client = MagicMock()
+    resp = MagicMock()
+    text_block = MagicMock()
+    text_block.type = "text"
+    resp.content = [text_block]
+    client.messages.create.return_value = resp
+    critic = LLMCritic(client=client)
+
+    with caplog.at_level("WARNING", logger="app.backend.critic_llm"):
+        result = critic.review_training({"r2_train": 0.9, "r2_val": 0.85})
+
+    assert result == []
+    assert any("no tool_use" in r.message for r in caplog.records)
+
+
+def test_bad_payload_shape_returns_empty_list(caplog):
+    client = MagicMock()
+    resp = MagicMock()
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {"wrong_key": "no observations here"}
+    resp.content = [tool_block]
+    resp.model = "claude-sonnet-4-6"
+    resp.usage = MagicMock(input_tokens=10, output_tokens=5,
+                           cache_read_input_tokens=0,
+                           cache_creation_input_tokens=0)
+    client.messages.create.return_value = resp
+    critic = LLMCritic(client=client)
+
+    with caplog.at_level("WARNING", logger="app.backend.critic_llm"):
+        result = critic.review_training({"r2_train": 0.9, "r2_val": 0.85})
+
+    assert result == []
+    assert any("bad payload shape" in r.message for r in caplog.records)
