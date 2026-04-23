@@ -228,7 +228,7 @@ def make_llm_critic() -> LLMCritic | None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:
-        from anthropic import Anthropic
+        from anthropic import Anthropic  # type: ignore[import-not-found]
     except ImportError:
         logger.warning("anthropic package missing — LLM-Critic disabled")
         return None
