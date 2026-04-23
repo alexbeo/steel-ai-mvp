@@ -89,3 +89,79 @@ class AlQualityResult:
     model_id: str
     inputs: dict
     warnings: list[str] = field(default_factory=list)
+
+
+def compute_al_demand(
+    o_a_initial_ppm: float,
+    temperature_C: float,
+    steel_mass_ton: float,
+    target_o_a_ppm: float,
+    al_purity_pct: float = 100.0,
+    burn_off_pct: float = 20.0,
+    model_id: str = DEFAULT_MODEL_ID,
+    al_price_per_kg: float = 2.40,
+    currency: str = "EUR",
+) -> DeoxidationResult:
+    """Forward: how much Al to add to reduce O_a from initial to target."""
+    inputs = {
+        "o_a_initial_ppm": o_a_initial_ppm,
+        "temperature_C": temperature_C,
+        "steel_mass_ton": steel_mass_ton,
+        "target_o_a_ppm": target_o_a_ppm,
+        "al_purity_pct": al_purity_pct,
+        "burn_off_pct": burn_off_pct,
+        "model_id": model_id,
+    }
+    warnings: list[str] = []
+
+    if model_id not in THERMO_MODELS:
+        raise ValueError(f"Unknown thermo model: {model_id}")
+    model = THERMO_MODELS[model_id]
+
+    if not (50.0 <= o_a_initial_ppm <= 800.0):
+        warnings.append(
+            f"O_a = {o_a_initial_ppm:.0f} ppm вне физического диапазона "
+            f"50-800 ppm для LF — проверьте датчик."
+        )
+    T_K = temperature_C + 273.15
+    lo_K, hi_K = model.valid_t_range_k
+    if not (lo_K <= T_K <= hi_K):
+        warnings.append(
+            f"Temperature {temperature_C:.0f}°C вне валидного диапазона модели "
+            f"{model.name}: {lo_K-273.15:.0f}-{hi_K-273.15:.0f}°C."
+        )
+    if target_o_a_ppm >= o_a_initial_ppm:
+        warnings.append(
+            f"Target O_a ({target_o_a_ppm}) >= initial ({o_a_initial_ppm}) — "
+            f"раскисление не требуется."
+        )
+        return DeoxidationResult(
+            al_total_kg=0.0, al_active_kg=0.0, al_burn_off_kg=0.0,
+            o_a_expected_ppm=o_a_initial_ppm, al_per_ton=0.0,
+            cost_eur=0.0, currency=currency, model_id=model_id,
+            inputs=inputs, warnings=warnings,
+        )
+    if not (0.0 < al_purity_pct <= 100.0):
+        raise ValueError(f"al_purity_pct must be in (0, 100], got {al_purity_pct}")
+    if not (0.0 <= burn_off_pct < 100.0):
+        raise ValueError(f"burn_off_pct must be in [0, 100), got {burn_off_pct}")
+
+    delta_o_kg = (o_a_initial_ppm - target_o_a_ppm) / 1e6 * steel_mass_ton * 1000.0
+    al_active_kg = delta_o_kg * AL_TO_O_MASS_RATIO
+    al_before_burn_off = al_active_kg / (1.0 - burn_off_pct / 100.0)
+    al_burn_off_kg = al_before_burn_off - al_active_kg
+    al_total_kg = al_before_burn_off / (al_purity_pct / 100.0)
+    o_a_expected_ppm = target_o_a_ppm
+
+    return DeoxidationResult(
+        al_total_kg=al_total_kg,
+        al_active_kg=al_active_kg,
+        al_burn_off_kg=al_burn_off_kg,
+        o_a_expected_ppm=o_a_expected_ppm,
+        al_per_ton=al_total_kg / steel_mass_ton,
+        cost_eur=al_total_kg * al_price_per_kg,
+        currency=currency,
+        model_id=model_id,
+        inputs=inputs,
+        warnings=warnings,
+    )
