@@ -33,6 +33,7 @@ class Phase(str, Enum):
     INVERSE_DESIGN = "inverse_design"
     VALIDATION = "validation"
     REPORTING = "reporting"
+    DEOXIDATION = "deoxidation"
 
 
 @dataclass
@@ -442,6 +443,60 @@ def _check_c04_missing_element_in_snapshot(ctx: dict) -> CheckResult:
 
 
 # =========================================================================
+# DX — Deoxidation patterns
+# =========================================================================
+
+def _check_dx01_extreme_o_activity(ctx: dict) -> CheckResult:
+    o_a = ctx.get("o_a_initial_ppm")
+    if o_a is None:
+        return CheckResult(False)
+    if o_a < 50.0 or o_a > 800.0:
+        return CheckResult(
+            True,
+            message=(
+                f"O_a = {o_a:.0f} ppm вне физически осмысленного диапазона "
+                f"50-800 ppm для LF — проверьте датчик или пробоотбор."
+            ),
+            details={"o_a_initial_ppm": o_a},
+        )
+    return CheckResult(False)
+
+
+def _check_dx02_target_above_initial(ctx: dict) -> CheckResult:
+    o_a_initial = ctx.get("o_a_initial_ppm")
+    target = ctx.get("target_o_a_ppm")
+    if o_a_initial is None or target is None:
+        return CheckResult(False)
+    if target >= o_a_initial:
+        return CheckResult(
+            True,
+            message=(
+                f"Target O_a ({target:.0f}) >= измеренного ({o_a_initial:.0f}) — "
+                f"раскисление не требуется или ошибка ввода."
+            ),
+            details={"target_o_a_ppm": target, "o_a_initial_ppm": o_a_initial},
+        )
+    return CheckResult(False)
+
+
+def _check_dx03_low_effective_purity(ctx: dict) -> CheckResult:
+    purity = ctx.get("effective_purity_pct")
+    if purity is None:
+        return CheckResult(False)
+    if purity < 70.0:
+        return CheckResult(
+            True,
+            message=(
+                f"Эффективная чистота активного Al = {purity:.1f}% (<70%). "
+                f"Возможно некачественная поставка чушки/лигатуры или "
+                f"неверное допущение по burn_off."
+            ),
+            details={"effective_purity_pct": purity},
+        )
+    return CheckResult(False)
+
+
+# =========================================================================
 # Библиотека
 # =========================================================================
 
@@ -608,6 +663,27 @@ PATTERNS: list[Pattern] = [
         description="design_required_elements содержит элемент без материала",
         check=_check_c04_missing_element_in_snapshot,
         suggestion="Добавьте соответствующий ферросплав/чистый материал в snapshot.",
+    ),
+    Pattern(
+        id="DX01", title="O-активность вне LF-диапазона",
+        phase=Phase.DEOXIDATION, severity=Severity.HIGH,
+        description="O_a_initial < 50 ppm или > 800 ppm",
+        check=_check_dx01_extreme_o_activity,
+        suggestion="Проверить калибровку Celox-зонда, заново отобрать пробу.",
+    ),
+    Pattern(
+        id="DX02", title="Target O_a не ниже измеренного",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="target >= o_a_initial — раскисление не нужно",
+        check=_check_dx02_target_above_initial,
+        suggestion="Перепроверить ТЗ на марку или значения проб.",
+    ),
+    Pattern(
+        id="DX03", title="Подозрительно низкая эффективная чистота Al",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="effective_purity_pct < 70% (inverse mode)",
+        check=_check_dx03_low_effective_purity,
+        suggestion="Проверить поставщика Al или пересмотреть допущение burn_off.",
     ),
 ]
 

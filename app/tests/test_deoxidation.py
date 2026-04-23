@@ -191,3 +191,35 @@ def test_steel_class_profile_loads_target_o_activity():
     assert hsla.target_o_activity_ppm == 5.0
     qt = load_steel_class("en10083_qt")
     assert qt.target_o_activity_ppm == 15.0
+
+
+def test_pattern_dx01_triggers_on_extreme_o_a():
+    from pattern_library.patterns import Phase, run_all_patterns
+    ctx = {"o_a_initial_ppm": 900.0}
+    warnings = run_all_patterns(ctx, phase=Phase.DEOXIDATION)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "DX01" in ids
+
+
+def test_pattern_dx02_triggers_when_target_exceeds_initial():
+    from pattern_library.patterns import Phase, run_all_patterns
+    ctx = {"o_a_initial_ppm": 100, "target_o_a_ppm": 150}
+    warnings = run_all_patterns(ctx, phase=Phase.DEOXIDATION)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "DX02" in ids
+
+
+def test_pattern_dx03_triggers_on_low_effective_purity():
+    from pattern_library.patterns import Phase, run_all_patterns
+    ctx = {"effective_purity_pct": 55.0}
+    warnings = run_all_patterns(ctx, phase=Phase.DEOXIDATION)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "DX03" in ids
+
+
+def test_pattern_dx01_does_not_trigger_in_normal_range():
+    from pattern_library.patterns import Phase, run_all_patterns
+    ctx = {"o_a_initial_ppm": 450}
+    warnings = run_all_patterns(ctx, phase=Phase.DEOXIDATION)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "DX01" not in ids
