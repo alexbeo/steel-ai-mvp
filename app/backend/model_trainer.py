@@ -306,8 +306,11 @@ class ModelTrainerAgent:
                     from app.backend.feature_eng import PIPE_HSLA_FEATURE_SET
                     feature_list = [f for f in PIPE_HSLA_FEATURE_SET if f in df.columns]
                 
-                trained = train_model(df, target=target, feature_list=feature_list,
-                                     n_optuna_trials=task.get("n_optuna_trials", 40))
+                trained = train_model(
+                    df, target=target, feature_list=feature_list,
+                    n_optuna_trials=task.get("n_optuna_trials", 40),
+                    steel_class=task.get("steel_class", "pipe_hsla"),
+                )
                 
                 log_decision(
                     phase="training",
@@ -334,6 +337,7 @@ class ModelTrainerAgent:
                         "artifact_path": trained.artifact_path,
                         "target": target,
                         "feature_list": feature_list,
+                        "steel_class": trained.steel_class,
                         "r2_train": trained.metrics.r2_train,
                         "r2_val": trained.metrics.r2_val,
                         "r2_test": trained.metrics.r2_test,

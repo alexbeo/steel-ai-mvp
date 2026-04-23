@@ -174,6 +174,37 @@ def test_pattern_m05_uses_ctx_expected_features_en10083():
     assert "M05" not in ids
 
 
+def test_engine_critic_context_gets_per_class_bounds_and_features():
+    """_build_critic_context populates expected_top_features + physical_bounds per class."""
+    from app.backend.engine import Orchestrator, PipelineState, AgentResult, Critic
+
+    state = PipelineState(user_request={"task_type": "train"})
+    state.features["training_ranges"] = {}
+    agent_result = AgentResult(
+        agent_name="model_trainer", success=True,
+        output={
+            "version": "en10083qt_hardness_hrc_xgb_test",
+            "steel_class": "en10083_qt",
+            "split_strategy": "time_based",
+            "cv_strategy": "group_kfold",
+            "has_uncertainty": True,
+            "has_ood_detector": True,
+            "feature_importance": {
+                "c_pct": 0.3, "tempering_temp": 0.2,
+                "austenitizing_temp": 0.15, "mn_pct": 0.1,
+                "section_thickness_mm": 0.08,
+            },
+        },
+    )
+    orch = Orchestrator(agents={}, critic=Critic(use_llm=False))
+    ctx = orch._build_critic_context("training", state, agent_result)
+
+    assert ctx["steel_class"] == "en10083_qt"
+    assert "c_pct" in ctx["expected_top_features"]
+    assert "tempering_temp" in ctx["expected_top_features"]
+    assert ctx["physical_bounds"]["c_pct"] == [0.18, 0.65]
+
+
 def test_pattern_d07_uses_ctx_bounds_en10083():
     """D07 uses ctx['physical_bounds'] when provided (per-class)."""
     import pandas as pd

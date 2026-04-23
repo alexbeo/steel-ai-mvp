@@ -398,8 +398,16 @@ class Orchestrator:
         """Формирует context для Critic, собирая relevant метрики."""
         ctx = {"phase": phase, **result.output}
         if phase == "training":
+            steel_class_id = result.output.get("steel_class", "pipe_hsla")
+            try:
+                from app.backend.steel_classes import load_steel_class
+                profile = load_steel_class(steel_class_id)
+                ctx["steel_class"] = steel_class_id
+                ctx["expected_top_features"] = profile.expected_top_features
+                ctx["physical_bounds"] = profile.physical_bounds
+            except Exception:
+                ctx["steel_class"] = steel_class_id
             ctx.update({
-                "steel_class": "pipe_hsla",
                 "has_time_column": state.dataset.get("has_time_column", True),
                 "has_groups": state.dataset.get("has_groups", True),
                 "split_strategy": result.output.get("split_strategy", "unknown"),
