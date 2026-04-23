@@ -165,15 +165,33 @@ def test_load_seed_snapshot_yaml():
 
 def test_save_then_load_roundtrip(tmp_path):
     original = _full_seed_rub()
+    original.notes = "roundtrip test — keep me"
     path = tmp_path / "snap.yaml"
     save_snapshot(original, path)
     loaded = load_snapshot(path)
     assert loaded.date == original.date
     assert loaded.currency == original.currency
+    assert loaded.source == original.source
+    assert loaded.notes == original.notes
     assert set(loaded.materials) == set(original.materials)
     for mid, mat in original.materials.items():
         assert loaded.materials[mid].price_per_kg == pytest.approx(mat.price_per_kg)
         assert loaded.materials[mid].element_content == mat.element_content
+
+
+def test_load_snapshot_negative_content_raises(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "date: 2026-04-23\ncurrency: RUB\nsource: test\n"
+        "materials:\n"
+        "  FeMn-bad:\n"
+        "    kind: ferroalloy\n"
+        "    price_per_kg: 180.0\n"
+        "    element_content: {Mn: 1.5, Fe: -0.5}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="negative values"):
+        load_snapshot(bad)
 
 
 def test_seed_snapshot_is_loadable():

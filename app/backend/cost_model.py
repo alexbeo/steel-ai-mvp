@@ -162,11 +162,15 @@ def seed_snapshot() -> PriceSnapshot:
 
 
 def _validate_material_dict(mid: str, md: dict) -> None:
+    # Developer/parser-level messages are English; user-facing messages
+    # (surfaced to the UI) are Russian — see CLAUDE.md.
     if md.get("price_per_kg", 0) <= 0:
         raise ValueError(f"{mid}: price_per_kg must be > 0")
     ec = md.get("element_content") or {}
     if not ec:
         raise ValueError(f"{mid}: element_content is empty")
+    if any(float(v) < 0 for v in ec.values()):
+        raise ValueError(f"{mid}: element_content has negative values")
     s = sum(float(v) for v in ec.values())
     if abs(s - 1.0) > 0.02:
         raise ValueError(
