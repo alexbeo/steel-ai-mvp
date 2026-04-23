@@ -101,7 +101,8 @@ def test_system_prompt_has_cache_control():
     client.messages.create.return_value = _make_mock_response([])
     critic = LLMCritic(client=client)
 
-    critic.review_training({"r2_train": 0.9, "r2_val": 0.85})
+    with patch("app.backend.critic_llm._log_usage"):
+        critic.review_training({"r2_train": 0.9, "r2_val": 0.85})
 
     kwargs = client.messages.create.call_args.kwargs
     assert kwargs["model"] == "claude-sonnet-4-6"
@@ -158,3 +159,48 @@ def test_bad_payload_shape_returns_empty_list(caplog):
 
     assert result == []
     assert any("bad payload shape" in r.message for r in caplog.records)
+
+
+def test_log_usage_writes_decision_log(monkeypatch, tmp_path):
+    """_log_usage pipes token counts and observations into log_decision."""
+    from app.backend.critic_llm import _log_usage
+    from decision_log import logger as dl_module
+
+    tmp_db = tmp_path / "test_decisions.db"
+    monkeypatch.setattr(dl_module, "DEFAULT_DB_PATH", tmp_db)
+    # log_decision's db_path default is bound at function-definition time,
+    # so the setattr above doesn't affect it. Rebind the function's
+    # __defaults__ to route the write into tmp_db and isolate the real DB.
+    orig_defaults = dl_module.log_decision.__defaults__
+    new_defaults = tuple(
+        tmp_db if isinstance(d, type(tmp_db)) else d
+        for d in orig_defaults
+    )
+    monkeypatch.setattr(dl_module.log_decision, "__defaults__", new_defaults)
+
+    resp = MagicMock()
+    resp.model = "claude-sonnet-4-6"
+    resp.usage = MagicMock(
+        input_tokens=1200,
+        output_tokens=180,
+        cache_read_input_tokens=800,
+        cache_creation_input_tokens=0,
+    )
+    observations = [
+        LLMObservation(severity="HIGH", category="model",
+                       message="test msg", rationale="test why"),
+    ]
+    _log_usage(resp, elapsed_s=2.34, observations=observations)
+
+    rows = dl_module.query_decisions(tag="llm_critic", db_path=tmp_db)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["author"] == "llm_critic"
+    assert "llm_critic" in r["tags"]
+    assert "sonnet-4-6" in r["tags"]
+    assert "1200" in r["reasoning"]
+    assert "800" in r["reasoning"]
+    assert r["context"]["usage"]["output_tokens"] == 180
+    assert r["context"]["usage"]["cache_read"] == 800
+    assert r["context"]["usage"]["latency_s"] == 2.34
+    assert len(r["context"]["observations"]) == 1

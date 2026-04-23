@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
@@ -189,10 +189,37 @@ class LLMCritic:
 
 
 def _log_usage(resp: Any, elapsed_s: float, observations: list[LLMObservation]) -> None:
-    """Persist LLM-Critic metrics to Decision Log — full impl in Task 5."""
-    logger.debug(
-        "LLM-Critic: %d observations, %.2fs elapsed",
-        len(observations), elapsed_s,
+    """Persist LLM-Critic metrics (input/output/cache tokens + observations) to Decision Log."""
+    from decision_log.logger import log_decision
+
+    usage = resp.usage
+    input_tokens = getattr(usage, "input_tokens", 0)
+    output_tokens = getattr(usage, "output_tokens", 0)
+    cache_read = getattr(usage, "cache_read_input_tokens", 0)
+    cache_create = getattr(usage, "cache_creation_input_tokens", 0)
+    model = getattr(resp, "model", "unknown")
+
+    log_decision(
+        phase="training",
+        decision=f"LLM-Critic review: {len(observations)} observations",
+        reasoning=(
+            f"Model={model}, "
+            f"input={input_tokens} (cache_read={cache_read}, "
+            f"cache_create={cache_create}), "
+            f"output={output_tokens}, latency={elapsed_s:.2f}s"
+        ),
+        context={
+            "observations": [asdict(o) for o in observations],
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read": cache_read,
+                "cache_create": cache_create,
+                "latency_s": round(elapsed_s, 2),
+            },
+        },
+        author="llm_critic",
+        tags=["llm_critic", "sonnet-4-6"],
     )
 
 
