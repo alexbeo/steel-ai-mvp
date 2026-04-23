@@ -98,3 +98,70 @@ class PriceSnapshotIncomplete(ValueError):
     def __init__(self, missing: list[str]):
         self.missing = missing
         super().__init__(f"Нет цен для: {', '.join(missing)}")
+
+
+def compute_cost(
+    composition_pct: dict[str, float],
+    snapshot: PriceSnapshot,
+    mode: CostMode = "full",
+) -> CostBreakdown:
+    """Compute cost per ton of steel from composition (in %).
+
+    composition_pct uses pct-suffix keys matching VARIABLE_BOUNDS_HSLA:
+    {"mn_pct": 1.5, "nb_pct": 0.04, ...}. Elements not in
+    FERROALLOY_PREFERENCE and not in NON_PRICED_ELEMENTS raise ValueError.
+    n_ppm and non-_pct keys are ignored.
+    """
+    alloy_contribs: list[CostContribution] = []
+    total_alloy_mass = 0.0
+
+    for var, pct in composition_pct.items():
+        if not var.endswith("_pct"):
+            continue
+        elem = var[:-4].capitalize()
+        if elem in NON_PRICED_ELEMENTS:
+            continue
+        if pct <= 0:
+            continue
+        if elem not in FERROALLOY_PREFERENCE:
+            raise ValueError(f"Нет маппинга для элемента {elem}")
+        material_id = FERROALLOY_PREFERENCE[elem]
+        if material_id not in snapshot.materials:
+            raise PriceSnapshotIncomplete([elem])
+        material = snapshot.materials[material_id]
+        content = material.element_content.get(elem, 0.0)
+        if content <= 0:
+            raise ValueError(f"Material {material_id} не содержит {elem}")
+        elem_mass = pct * 10.0                    # 1% = 10 kg на 1 т
+        alloy_mass = elem_mass / content
+        contribution = alloy_mass * material.price_per_kg
+        alloy_contribs.append(CostContribution(
+            material_id=material_id,
+            mass_kg_per_ton_steel=alloy_mass,
+            price_per_kg=material.price_per_kg,
+            contribution_per_ton=contribution,
+        ))
+        total_alloy_mass += alloy_mass
+
+    if mode == "full":
+        if "scrap" not in snapshot.materials:
+            raise PriceSnapshotIncomplete(["scrap (base material)"])
+        scrap = snapshot.materials["scrap"]
+        base_mass = max(0.0, 1000.0 - total_alloy_mass)
+        base_contribution = CostContribution(
+            material_id="scrap",
+            mass_kg_per_ton_steel=base_mass,
+            price_per_kg=scrap.price_per_kg,
+            contribution_per_ton=base_mass * scrap.price_per_kg,
+        )
+        contributions = [base_contribution] + alloy_contribs
+    else:
+        contributions = alloy_contribs
+
+    total = sum(c.contribution_per_ton for c in contributions)
+    return CostBreakdown(
+        total_per_ton=total,
+        contributions=contributions,
+        mode=mode,
+        currency=snapshot.currency,
+    )
