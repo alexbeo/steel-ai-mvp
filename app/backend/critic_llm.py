@@ -8,6 +8,7 @@ affect Verdict (Pattern Library remains the sole gate).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -100,6 +101,38 @@ _TOOL_SCHEMA = {
         "required": ["observations"],
     },
 }
+
+
+def _build_user_payload(ctx: dict) -> str:
+    """Compose the user message for Claude — a JSON snapshot of training context."""
+    importance = ctx.get("feature_importance") or {}
+    top10 = dict(sorted(importance.items(), key=lambda kv: -kv[1])[:10])
+    payload = {
+        "metrics": {
+            "r2_train": ctx.get("r2_train"),
+            "r2_val": ctx.get("r2_val"),
+            "r2_test": ctx.get("r2_test"),
+            "mae_test": ctx.get("mae_test"),
+            "rmse_test": ctx.get("rmse_test"),
+            "coverage_90_ci": ctx.get("coverage_90_ci"),
+        },
+        "dataset_size": {
+            "n_train": ctx.get("n_train"),
+            "n_val": ctx.get("n_val"),
+            "n_test": ctx.get("n_test"),
+        },
+        "split_strategy": ctx.get("split_strategy"),
+        "cv_strategy": ctx.get("cv_strategy"),
+        "feature_importance_top10": top10,
+        "training_ranges": ctx.get("training_ranges") or {},
+        "steel_class": ctx.get("steel_class", "pipe_hsla"),
+        "target": ctx.get("target", "yield_strength_mpa"),
+    }
+    return (
+        "Training артефакт для review:\n```json\n"
+        + json.dumps(payload, indent=2, ensure_ascii=False)
+        + "\n```"
+    )
 
 
 class LLMCritic:
