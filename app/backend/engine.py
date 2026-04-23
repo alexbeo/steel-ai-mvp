@@ -34,6 +34,31 @@ from decision_log.logger import (
 logger = logging.getLogger(__name__)
 
 
+def _extract_snapshot_meta(user_request: dict) -> dict | None:
+    snap = user_request.get("price_snapshot")
+    if snap is None:
+        return None
+    return {
+        "date": snap.date.isoformat(),
+        "currency": snap.currency,
+        "source": snap.source,
+        "n_materials": len(snap.materials),
+    }
+
+
+def _extract_snapshot_materials(user_request: dict) -> list[dict]:
+    snap = user_request.get("price_snapshot")
+    if snap is None:
+        return []
+    from dataclasses import asdict
+    return [asdict(m) for m in snap.materials.values()]
+
+
+def _elements_from_bounds(bounds: dict) -> set[str]:
+    from app.backend.cost_model import required_elements_for_design
+    return required_elements_for_design(bounds)
+
+
 class Verdict(str, Enum):
     PASS = "PASS"
     PASS_WITH_WARNINGS = "PASS_WITH_WARNINGS"
@@ -359,6 +384,8 @@ class Orchestrator:
                 "targets": user_request.get("targets", {}),
                 "hard_constraints": user_request.get("constraints", {}),
                 "model_version": state.model.get("version"),
+                "price_snapshot": user_request.get("price_snapshot"),
+                "cost_mode": user_request.get("cost_mode", "full"),
             }
         if phase == "validation":
             return {
@@ -411,6 +438,15 @@ class Orchestrator:
                 "n_objectives": result.output.get("n_objectives", 1),
                 "variable_bounds": result.output.get("variable_bounds", {}),
                 "training_variable_ranges": state.features.get("training_ranges", {}),
+                # Cost-optimization context (for C01-C04 patterns):
+                "price_snapshot_meta": _extract_snapshot_meta(state.user_request),
+                "snapshot_materials": _extract_snapshot_materials(state.user_request),
+                "design_required_elements": sorted(
+                    _elements_from_bounds(result.output.get("variable_bounds", {}))
+                ),
+                "cost_breakdown_samples": [
+                    c.get("cost") for c in state.candidates[:5] if c.get("cost")
+                ],
             })
         return ctx
     
