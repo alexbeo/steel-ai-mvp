@@ -15,7 +15,6 @@ import pickle
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -106,8 +105,8 @@ def train_model(
     random_seed: int = 42,
     steel_class: str = "pipe_hsla",
 ) -> TrainedModel:
-    import xgboost as xgb
-    import optuna
+    import xgboost as xgb  # type: ignore[import-not-found]
+    import optuna  # type: ignore[import-not-found]
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     
     # 1. Split
