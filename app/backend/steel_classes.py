@@ -40,6 +40,7 @@ class SteelClassProfile:
     synthetic_generator_name: str
     cost_seed_path: str
     feature_engineering: str
+    target_o_activity_ppm: float | None = None
 
     def target_ids(self) -> list[str]:
         return [t.id for t in self.target_properties]
@@ -65,6 +66,7 @@ def load_steel_class(class_id: str) -> SteelClassProfile:
         synthetic_generator_name=data["synthetic_generator_name"],
         cost_seed_path=data.get("cost_seed_path", ""),
         feature_engineering=data.get("feature_engineering", "passthrough"),
+        target_o_activity_ppm=data.get("target_o_activity_ppm"),
     )
     _PROFILE_CACHE[class_id] = profile
     return profile

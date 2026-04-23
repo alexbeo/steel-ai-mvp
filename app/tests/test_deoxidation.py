@@ -183,3 +183,11 @@ def test_compare_all_models_returns_three_results():
     masses = [r.al_total_kg for r in results]
     spread = (max(masses) - min(masses)) / (sum(masses) / 3.0)
     assert spread < 0.25
+
+
+def test_steel_class_profile_loads_target_o_activity():
+    from app.backend.steel_classes import load_steel_class
+    hsla = load_steel_class("pipe_hsla")
+    assert hsla.target_o_activity_ppm == 5.0
+    qt = load_steel_class("en10083_qt")
+    assert qt.target_o_activity_ppm == 15.0

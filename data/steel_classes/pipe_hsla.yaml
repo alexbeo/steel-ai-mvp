@@ -65,3 +65,4 @@ process_params:
 synthetic_generator_name: pipe_hsla
 cost_seed_path: data/prices/seed_2026-04-23.yaml
 feature_engineering: compute_hsla_features
+target_o_activity_ppm: 5.0

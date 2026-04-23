@@ -44,3 +44,4 @@ process_params:
 synthetic_generator_name: en10083_qt
 cost_seed_path: data/prices/seed_2026-04-23.yaml
 feature_engineering: passthrough
+target_o_activity_ppm: 15.0
