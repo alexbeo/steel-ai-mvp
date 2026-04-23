@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -145,8 +146,54 @@ class LLMCritic:
         self.model = model or self.MODEL_ID
 
     def review_training(self, context: dict) -> list[LLMObservation]:
-        """Stub — implemented in Task 3."""
-        return []
+        """Query Claude and return observations; [] on any failure."""
+        user_payload = _build_user_payload(context)
+        start = time.monotonic()
+        try:
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=self.MAX_TOKENS,
+                system=[{
+                    "type": "text",
+                    "text": _SYSTEM_PROMPT_TEXT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                tools=[_TOOL_SCHEMA],
+                tool_choice={"type": "tool", "name": "report_observations"},
+                messages=[{"role": "user", "content": user_payload}],
+                timeout=self.TIMEOUT_S,
+            )
+        except Exception as e:
+            logger.warning("LLM-Critic API call failed: %s", e)
+            return []
+
+        elapsed = time.monotonic() - start
+
+        tool_block = next(
+            (b for b in resp.content if getattr(b, "type", None) == "tool_use"),
+            None,
+        )
+        if tool_block is None:
+            logger.warning("LLM-Critic: no tool_use block in response")
+            return []
+
+        try:
+            raw_obs = tool_block.input["observations"]
+            observations = [LLMObservation(**o) for o in raw_obs]
+        except (KeyError, TypeError) as e:
+            logger.warning("LLM-Critic: bad payload shape: %s", e)
+            return []
+
+        _log_usage(resp, elapsed, observations)
+        return observations
+
+
+def _log_usage(resp: Any, elapsed_s: float, observations: list[LLMObservation]) -> None:
+    """Persist LLM-Critic metrics to Decision Log — full impl in Task 5."""
+    logger.debug(
+        "LLM-Critic: %d observations, %.2fs elapsed",
+        len(observations), elapsed_s,
+    )
 
 
 def make_llm_critic() -> LLMCritic | None:

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock, patch
 
 from app.backend.critic_llm import (
     LLMCritic,
+    LLMObservation,
     _build_user_payload,
     make_llm_critic,
 )
@@ -48,3 +50,62 @@ def test_build_user_payload_has_expected_keys():
     assert len(parsed["feature_importance_top10"]) == 10
     assert list(parsed["feature_importance_top10"])[0] == "c_pct"
     assert "noise_2" not in parsed["feature_importance_top10"]
+
+
+def _make_mock_response(observations: list[dict]) -> MagicMock:
+    """Build a mock Anthropic response with a tool_use block."""
+    resp = MagicMock()
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.input = {"observations": observations, "summary": "ok"}
+    resp.content = [tool_block]
+    resp.model = "claude-sonnet-4-6"
+    resp.usage = MagicMock(
+        input_tokens=1200,
+        output_tokens=180,
+        cache_read_input_tokens=800,
+        cache_creation_input_tokens=0,
+    )
+    return resp
+
+
+def test_review_training_happy_path():
+    client = MagicMock()
+    client.messages.create.return_value = _make_mock_response([
+        {"severity": "HIGH", "category": "model",
+         "message": "Top feature cu_pct подозрителен",
+         "rationale": "Для HSLA медь не должна доминировать"},
+        {"severity": "MEDIUM", "category": "physics",
+         "message": "rolling_finish_temp диапазон 720-900°C шире обычного",
+         "rationale": "Для pipe-HSLA оптимум 780-820°C"},
+    ])
+    critic = LLMCritic(client=client)
+
+    with patch("app.backend.critic_llm._log_usage") as mock_log:
+        result = critic.review_training({
+            "r2_train": 0.95, "r2_val": 0.71,
+            "feature_importance": {"cu_pct": 0.35, "c_pct": 0.10},
+            "training_ranges": {"rolling_finish_temp": [720, 900]},
+        })
+
+    assert len(result) == 2
+    assert isinstance(result[0], LLMObservation)
+    assert result[0].severity == "HIGH"
+    assert result[0].category == "model"
+    assert result[1].severity == "MEDIUM"
+    mock_log.assert_called_once()
+
+
+def test_system_prompt_has_cache_control():
+    client = MagicMock()
+    client.messages.create.return_value = _make_mock_response([])
+    critic = LLMCritic(client=client)
+
+    critic.review_training({"r2_train": 0.9, "r2_val": 0.85})
+
+    kwargs = client.messages.create.call_args.kwargs
+    assert kwargs["model"] == "claude-sonnet-4-6"
+    assert kwargs["max_tokens"] == 1200
+    assert isinstance(kwargs["system"], list)
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "report_observations"}
