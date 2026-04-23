@@ -154,14 +154,20 @@ with tab_design:
 
         uploaded = st.file_uploader("⬆ Загрузить YAML-прайс", type=["yaml", "yml"])
         if uploaded is not None:
-            tmp_path = Path("/tmp") / uploaded.name
-            tmp_path.write_bytes(uploaded.read())
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                suffix=".yaml", delete=False,
+            ) as tmp_file:
+                tmp_file.write(uploaded.read())
+                tmp_path = Path(tmp_file.name)
             try:
                 st.session_state["price_snapshot"] = load_snapshot(tmp_path)
                 st.success(f"Загружено: {uploaded.name}")
                 st.rerun()
             except Exception as e:
                 st.error(f"Не удалось загрузить: {e}")
+            finally:
+                tmp_path.unlink(missing_ok=True)
 
         df_editor = _snapshot_to_editor_df(snap)
         edited = st.data_editor(

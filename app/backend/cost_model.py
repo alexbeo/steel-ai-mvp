@@ -48,17 +48,9 @@ FERROALLOY_PREFERENCE: dict[str, str] = {
 # Elements that come "for free" with scrap/process — not priced separately.
 NON_PRICED_ELEMENTS: set[str] = {"C", "P", "S", "N"}
 
-# Physically plausible content ranges for ferroalloys (used by C02).
-FERROALLOY_CONTENT_RANGES: dict[str, tuple[str, float, float]] = {
-    "FeNb-65": ("Nb", 0.55, 0.75),
-    "FeMn-80": ("Mn", 0.70, 0.88),
-    "FeSi-75": ("Si", 0.70, 0.80),
-    "FeCr-HC": ("Cr", 0.55, 0.70),
-    "FeV-50":  ("V",  0.40, 0.60),
-    "FeTi-70": ("Ti", 0.65, 0.75),
-    "FeMo":    ("Mo", 0.55, 0.70),
-    "FeNi":    ("Ni", 0.20, 0.40),
-}
+# Physically plausible content ranges for ferroalloys are defined in
+# pattern_library/patterns.py as `_FERROALLOY_RANGES` (used by pattern C02).
+# Single source of truth lives there — do not duplicate here.
 
 
 @dataclass(frozen=True)
