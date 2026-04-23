@@ -101,9 +101,17 @@ training → inverse_design → validation → reporting
 
 Physical bounds и expected top-features для Critic проверок `D07` / `M05` читаются из профиля через `_build_critic_context` (fallback на HSLA-константы для старых моделей без `meta["steel_class"]`). Synthetic-генераторы живут в `data_curator.py` (`generate_synthetic_hsla_dataset`, `generate_synthetic_en10083_qt_dataset`) и регистрируются в `steel_classes.get_synthetic_generator(name)`.
 
+### Al-deoxidation advisory (on-line LF)
+
+`app/backend/deoxidation.py` — physics-only калькулятор раскисления жидкой стали алюминием на фазе ladle furnace. Три термодинамические модели в registry (`THERMO_MODELS`): Fruehan 1985 (дефолт), Sigworth-Elliott 1974, Hayashi-Yamamoto 2013. Две функции: `compute_al_demand` (forward — сколько Al подать) и `compute_al_quality` (inverse — эффективная чистота Al по факту плавки) + `compare_all_models` для сравнения 3 формул.
+
+UI — вкладка «🔥 Раскисление» с 3 sub-tabs (Forward / Inverse / Compare). Target O_a читается из активного `SteelClassProfile.target_o_activity_ppm` (HSLA=5, Q&T=15). Pattern Library имеет фазу `Phase.DEOXIDATION` + паттерны `DX01`/`DX02`/`DX03`. Decision Log — **опт-ин** (кнопка «Сохранить») во избежание спама БД на производственном темпе 50-200 плавок/день.
+
+**Не входит в MVP**: кинетика растворения Al, баланс FeO в шлаке, комбинированное раскисление (Al+FeSi+Ca), ML, feedback loop, интеграция с анализаторами O. Это фазы v0.6+.
+
 ### UI и API
 
-- `app/frontend/app.py` — Streamlit с 4 вкладками (Дизайн, Обучение, Прогноз, История). Сам импортирует функции напрямую из `app/backend/*` — не через Orchestrator. Для быстрого UX обучение/дизайн запускаются синхронно с прогресс-баром.
+- `app/frontend/app.py` — Streamlit с 5 вкладками (Дизайн, Обучение, Прогноз, Раскисление, История). Сам импортирует функции напрямую из `app/backend/*` — не через Orchestrator. Для быстрого UX обучение/дизайн запускаются синхронно с прогресс-баром.
 - `app/backend/` содержит намёки на FastAPI, но отдельного `api.py` сейчас нет — FastAPI-слой не реализован.
 - Streamlit опирается на наличие обученных моделей в `models/<version>/`. Если моделей нет — сначала вкладка «Обучение модели».
 
