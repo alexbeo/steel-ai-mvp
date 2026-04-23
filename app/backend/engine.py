@@ -70,7 +70,7 @@ class CriticReport:
     phase: str
     verdict: Verdict
     warnings: list[dict] = field(default_factory=list)
-    exploratory_observations: list[str] = field(default_factory=list)
+    exploratory_observations: list[dict] = field(default_factory=list)
     requires_human_review: bool = False
     recommended_action: str = ""
 
@@ -124,84 +124,60 @@ class ExecutiveAgent(Protocol):
 
 class Critic:
     """
-    Запускает проверки Pattern Library + опциональные LLM-based exploratory checks.
-    Для MVP по умолчанию только Pattern Library (дешевле, быстрее).
+    Runs Pattern Library checks; when use_llm=True and an LLMCritic is
+    configured (or ANTHROPIC_API_KEY is in env), also calls Claude Sonnet 4.6
+    on the `training` phase for exploratory observations.
     """
-    
-    def __init__(self, use_llm: bool = False, llm_client=None):
+
+    def __init__(
+        self,
+        use_llm: bool = False,
+        llm_client=None,
+        llm_critic=None,
+    ):
         self.use_llm = use_llm
-        self.llm_client = llm_client
-    
+        self.llm_client = llm_client          # legacy param, retained for API compat
+        self.llm_critic = llm_critic
+        if self.use_llm and self.llm_critic is None:
+            from app.backend.critic_llm import make_llm_critic
+            self.llm_critic = make_llm_critic()
+
     def review(self, phase: str, context: dict) -> CriticReport:
         phase_enum = Phase(phase) if phase in {p.value for p in Phase} else None
-        
+
         pattern_warnings = run_all_patterns(context, phase=phase_enum)
-        
+
         high_count = sum(1 for w in pattern_warnings if w["severity"] == "HIGH")
         medium_count = sum(1 for w in pattern_warnings if w["severity"] == "MEDIUM")
-        
+
         if high_count > 0:
             verdict = Verdict.BLOCK
         elif medium_count > 0:
             verdict = Verdict.PASS_WITH_WARNINGS
         else:
             verdict = Verdict.PASS
-        
-        exploratory = []
-        if self.use_llm and self.llm_client and (high_count + medium_count) == 0:
-            # Экономия: если Pattern Library уже нашла проблемы, LLM-review пропускаем.
-            # LLM вызываем только когда pattern library молчит, но хочется подстраховаться.
-            exploratory = self._llm_review(phase, context)
-        
+
+        exploratory_raw: list[dict] = []
+        if self.use_llm and self.llm_critic and phase == "training":
+            from dataclasses import asdict
+            observations = self.llm_critic.review_training(context)
+            exploratory_raw = [asdict(o) for o in observations]
+
         requires_human = high_count > 0 or any(
             not w.get("auto_fixable", True) for w in pattern_warnings
         )
-        
+
         recommendations = [w["suggestion"] for w in pattern_warnings]
         recommended_action = "; ".join(recommendations[:3])
-        
-        report = CriticReport(
+
+        return CriticReport(
             phase=phase,
             verdict=verdict,
             warnings=pattern_warnings,
-            exploratory_observations=exploratory,
+            exploratory_observations=exploratory_raw,
             requires_human_review=requires_human,
             recommended_action=recommended_action,
         )
-        return report
-    
-    def _llm_review(self, phase: str, context: dict) -> list[str]:
-        """
-        Опциональный LLM-based review для ловли того, что Pattern Library не видит.
-        Дорого, включайте только когда нужна максимальная проверка.
-        """
-        if self.llm_client is None:
-            return []
-        
-        prompt = f"""Ты — критик ML-pipeline для металлургии HSLA-сталей.
-Проверь следующий артефакт на фазе {phase}.
-
-Context:
-{json.dumps(context, indent=2, ensure_ascii=False)}
-
-Что подозрительно с точки зрения:
-1. Металлургической физики (эти значения осмысленны для HSLA?)
-2. ML-безопасности (не выглядит ли модель слишком уверенной?)
-3. Бизнес-логики (выдерживает ли это test на практике?)
-
-Верни максимум 3 наблюдения в формате JSON:
-["observation 1", "observation 2", ...]
-
-Если всё в порядке — верни пустой массив [].
-"""
-        # Упрощённый вызов (реальная интеграция зависит от клиента)
-        try:
-            response = self.llm_client.generate(prompt, max_tokens=500)
-            observations = json.loads(response)
-            return observations if isinstance(observations, list) else []
-        except Exception as e:
-            logger.warning("LLM exploratory review failed: %s", e)
-            return []
 
 
 # =========================================================================

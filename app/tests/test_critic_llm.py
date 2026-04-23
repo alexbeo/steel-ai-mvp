@@ -204,3 +204,51 @@ def test_log_usage_writes_decision_log(monkeypatch, tmp_path):
     assert r["context"]["usage"]["cache_read"] == 800
     assert r["context"]["usage"]["latency_s"] == 2.34
     assert len(r["context"]["observations"]) == 1
+
+
+def test_engine_critic_delegates_to_llm_critic_on_training():
+    """engine.Critic.review('training', ctx) forwards to LLMCritic.review_training."""
+    from app.backend.engine import Critic
+
+    mock_llm_critic = MagicMock()
+    mock_llm_critic.review_training.return_value = [
+        LLMObservation(severity="MEDIUM", category="physics",
+                       message="msg", rationale="why"),
+    ]
+
+    critic = Critic(use_llm=True, llm_critic=mock_llm_critic)
+    report = critic.review("training", {
+        "feature_importance": {"c_pct": 0.3, "mn_pct": 0.2},
+        "r2_train": 0.9, "r2_val": 0.85, "coverage_90_ci": 0.88,
+        "has_time_column": True, "has_groups": True,
+        "split_strategy": "time_based", "cv_strategy": "group_kfold",
+    })
+
+    mock_llm_critic.review_training.assert_called_once()
+    assert len(report.exploratory_observations) == 1
+    assert report.exploratory_observations[0]["severity"] == "MEDIUM"
+    assert report.exploratory_observations[0]["category"] == "physics"
+
+
+def test_engine_critic_does_not_call_llm_outside_training():
+    """Phases other than training must not invoke LLMCritic."""
+    from app.backend.engine import Critic
+
+    mock_llm_critic = MagicMock()
+    critic = Critic(use_llm=True, llm_critic=mock_llm_critic)
+
+    critic.review("inverse_design", {"pareto_size": 10})
+
+    mock_llm_critic.review_training.assert_not_called()
+
+
+def test_engine_critic_without_use_llm_does_not_call_llm_critic():
+    """use_llm=False → LLMCritic never invoked even if instance provided."""
+    from app.backend.engine import Critic
+
+    mock_llm_critic = MagicMock()
+    critic = Critic(use_llm=False, llm_critic=mock_llm_critic)
+
+    critic.review("training", {"r2_train": 0.9, "r2_val": 0.85})
+
+    mock_llm_critic.review_training.assert_not_called()
