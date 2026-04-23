@@ -159,7 +159,7 @@ def test_compute_cost_zero_content_material_raises():
 def test_load_seed_snapshot_yaml():
     path = PROJECT_ROOT / "data" / "prices" / "seed_2026-04-23.yaml"
     snapshot = load_snapshot(path)
-    assert snapshot.currency == "RUB"
+    assert snapshot.currency == "EUR"
     assert snapshot.date == date(2026, 4, 23)
     assert "scrap" in snapshot.materials
     assert "FeNb-65" in snapshot.materials
@@ -355,9 +355,9 @@ def test_run_inverse_design_with_snapshot_adds_breakdown():
     assert result["n_candidates"] >= 1
     c = result["pareto_candidates"][0]
     assert c.get("cost") is not None
-    assert c["cost"]["currency"] == "RUB"
+    assert c["cost"]["currency"] == "EUR"
     assert c["cost"]["mode"] == "full"
-    assert 20_000 <= c["cost"]["total_per_ton"] <= 200_000
+    assert 200 <= c["cost"]["total_per_ton"] <= 2000      # EUR seed prices
     assert any(x["material_id"] == "scrap" for x in c["cost"]["contributions"])
 
 

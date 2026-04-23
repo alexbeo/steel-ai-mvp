@@ -82,7 +82,7 @@ def main():
     log.info("Pareto candidates: %d", design_result["n_candidates"])
     
     log.info("=" * 60)
-    log.info("STEP 5b/6: Inverse design with cost-optimization (seed RUB prices)")
+    log.info("STEP 5b/6: Inverse design with cost-optimization (seed EUR prices)")
     log.info("=" * 60)
     from app.backend.cost_model import seed_snapshot
     snapshot = seed_snapshot()
@@ -96,11 +96,12 @@ def main():
     log.info("Candidates with cost: %d", design_with_cost["n_candidates"])
     if design_with_cost["pareto_candidates"]:
         c0 = design_with_cost["pareto_candidates"][0]
-        log.info("  Top candidate cost: %.0f %s/т (%s mode)",
+        log.info("  Top candidate cost: %.2f %s/т (%s mode)",
                  c0["cost"]["total_per_ton"],
                  c0["cost"]["currency"],
                  c0["cost"]["mode"])
-        assert 20_000 <= c0["cost"]["total_per_ton"] <= 200_000
+        # Seed prices are in EUR; typical HSLA lands in 400-800 €/т range
+        assert 200 <= c0["cost"]["total_per_ton"] <= 2000
     assert design_with_cost["price_snapshot_path"]
 
     log.info("=" * 60)
