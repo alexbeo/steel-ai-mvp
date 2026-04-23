@@ -141,12 +141,10 @@ def _check_d06_random_split_in_temporal(ctx: dict) -> CheckResult:
 
 
 def _check_d07_physical_bounds(ctx: dict) -> CheckResult:
-    """Проверяет базовые физические границы на входных данных."""
     df = ctx.get("dataframe")
     if df is None:
         return CheckResult(False)
-    violations = []
-    bounds = {
+    bounds = ctx.get("physical_bounds") or {
         "c_pct": (0.02, 2.1),
         "mn_pct": (0.0, 20.0),
         "si_pct": (0.0, 5.0),
@@ -156,7 +154,9 @@ def _check_d07_physical_bounds(ctx: dict) -> CheckResult:
         "tensile_strength_mpa": (150, 3500),
         "elongation_pct": (0, 85),
     }
-    for col, (lo, hi) in bounds.items():
+    violations = []
+    for col, bound in bounds.items():
+        lo, hi = bound[0], bound[1]
         if col in df.columns:
             out_of_bounds = ((df[col] < lo) | (df[col] > hi)).sum()
             if out_of_bounds > 0:
@@ -214,26 +214,35 @@ def _check_m04_no_uncertainty(ctx: dict) -> CheckResult:
 
 def _check_m05_feature_importance_sanity(ctx: dict) -> CheckResult:
     """
-    Для HSLA-сталей ожидаемы в top-10: c_pct, mn_pct, nb_pct, ti_pct, v_pct,
-    рулонные температуры. Если чего-то физически маргинального (например, Cu) 
-    оказывается в топе — red flag.
+    For each steel class, ensure at least 2 of the top-5 features by importance
+    match the expected set defined in its YAML profile. Falls back to HSLA
+    expected-set for backward compat if no ctx["expected_top_features"] is given.
     """
     importance = ctx.get("feature_importance", {})
-    steel_class = ctx.get("steel_class", "")
-    if not importance or steel_class != "pipe_hsla":
+    if not importance:
         return CheckResult(False)
+    expected = set(ctx.get("expected_top_features") or [])
+    if not expected:
+        if ctx.get("steel_class", "") != "pipe_hsla":
+            return CheckResult(False)
+        expected = {
+            "c_pct", "mn_pct", "nb_pct", "ti_pct", "v_pct",
+            "rolling_finish_temp", "cooling_rate_c_per_s",
+            "cev_iiw", "pcm", "cen",
+        }
+
     top_features = sorted(importance.items(), key=lambda x: -x[1])[:5]
-    expected_in_top = {"c_pct", "mn_pct", "nb_pct", "ti_pct", "v_pct",
-                       "rolling_finish_temp", "cooling_rate_c_per_s",
-                       "cev_iiw", "pcm", "cen"}
     top_names = {f[0] for f in top_features}
-    overlap = top_names & expected_in_top
+    overlap = top_names & expected
     if len(overlap) < 2:
         return CheckResult(
             True,
-            message=f"Top-5 feature importance не содержит ожидаемых для HSLA фичей. "
-                    f"Top: {[f[0] for f in top_features]}. "
-                    f"Ожидалось увидеть минимум 2 из: {sorted(expected_in_top)}.",
+            message=(
+                f"Top-5 feature importance не содержит ожидаемых для класса "
+                f"{ctx.get('steel_class', '?')}. "
+                f"Top: {[f[0] for f in top_features]}. "
+                f"Ожидалось минимум 2 из: {sorted(expected)}."
+            ),
         )
     return CheckResult(False)
 

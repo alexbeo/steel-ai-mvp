@@ -134,3 +134,61 @@ def test_train_model_en10083_qt_smoke(tmp_path, monkeypatch):
     assert trained.steel_class == "en10083_qt"
     assert trained.version.startswith("en10083qt_")
     assert trained.metrics.r2_test > 0.6
+
+
+def test_pattern_m05_uses_ctx_expected_features_hsla():
+    from pattern_library.patterns import run_all_patterns, Phase
+    ctx = {
+        "steel_class": "pipe_hsla",
+        "expected_top_features": [
+            "c_pct", "mn_pct", "nb_pct", "ti_pct", "v_pct",
+            "rolling_finish_temp", "cooling_rate_c_per_s",
+            "cev_iiw", "pcm", "microalloying_sum",
+        ],
+        "feature_importance": {
+            "cu_pct": 0.40, "s_pct": 0.20, "n_ppm": 0.15,
+            "p_pct": 0.10, "al_pct": 0.05,
+        },
+    }
+    warnings = run_all_patterns(ctx, phase=Phase.TRAINING)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "M05" in ids
+
+
+def test_pattern_m05_uses_ctx_expected_features_en10083():
+    from pattern_library.patterns import run_all_patterns, Phase
+    ctx = {
+        "steel_class": "en10083_qt",
+        "expected_top_features": [
+            "c_pct", "tempering_temp", "austenitizing_temp",
+            "mn_pct", "section_thickness_mm",
+        ],
+        "feature_importance": {
+            "c_pct": 0.35, "tempering_temp": 0.25,
+            "austenitizing_temp": 0.15, "mn_pct": 0.10,
+            "section_thickness_mm": 0.08, "cr_pct": 0.05,
+        },
+    }
+    warnings = run_all_patterns(ctx, phase=Phase.TRAINING)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "M05" not in ids
+
+
+def test_pattern_d07_uses_ctx_bounds_en10083():
+    """D07 uses ctx['physical_bounds'] when provided (per-class)."""
+    import pandas as pd
+    from pattern_library.patterns import run_all_patterns, Phase
+    df = pd.DataFrame({
+        "c_pct": [0.25, 0.40, 0.75],    # last violates Q&T upper bound 0.65
+        "tempering_temp": [200, 500, 700],   # last violates upper 650
+    })
+    ctx = {
+        "dataframe": df,
+        "physical_bounds": {
+            "c_pct": [0.18, 0.65],
+            "tempering_temp": [150.0, 650.0],
+        },
+    }
+    warnings = run_all_patterns(ctx, phase=Phase.PREPROCESSING)
+    ids = {w["pattern_id"] for w in warnings}
+    assert "D07" in ids
