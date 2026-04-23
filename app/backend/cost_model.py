@@ -18,7 +18,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Literal
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,77 @@ class PriceSnapshotIncomplete(ValueError):
     def __init__(self, missing: list[str]):
         self.missing = missing
         super().__init__(f"Нет цен для: {', '.join(missing)}")
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SEED_SNAPSHOT_PATH = PROJECT_ROOT / "data" / "prices" / "seed_2026-04-23.yaml"
+
+
+def load_snapshot(path: Path) -> PriceSnapshot:
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    materials = {}
+    for mid, md in data["materials"].items():
+        _validate_material_dict(mid, md)
+        materials[mid] = Material(
+            id=mid,
+            kind=md["kind"],
+            price_per_kg=float(md["price_per_kg"]),
+            element_content={k: float(v) for k, v in md["element_content"].items()},
+        )
+    snap_date = data["date"]
+    if isinstance(snap_date, str):
+        snap_date = date.fromisoformat(snap_date)
+    return PriceSnapshot(
+        date=snap_date,
+        currency=data["currency"],
+        materials=materials,
+        source=data.get("source", "manual"),
+        notes=data.get("notes", ""),
+    )
+
+
+def save_snapshot(snapshot: PriceSnapshot, path: Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "date": snapshot.date.isoformat(),
+        "currency": snapshot.currency,
+        "source": snapshot.source,
+        "notes": snapshot.notes,
+        "materials": {
+            mid: {
+                "kind": m.kind,
+                "price_per_kg": m.price_per_kg,
+                "element_content": dict(m.element_content),
+            }
+            for mid, m in snapshot.materials.items()
+        },
+    }
+    path.write_text(
+        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def seed_snapshot() -> PriceSnapshot:
+    """Load the canonical seed snapshot from data/prices/."""
+    return load_snapshot(SEED_SNAPSHOT_PATH)
+
+
+def _validate_material_dict(mid: str, md: dict) -> None:
+    if md.get("price_per_kg", 0) <= 0:
+        raise ValueError(f"{mid}: price_per_kg must be > 0")
+    ec = md.get("element_content") or {}
+    if not ec:
+        raise ValueError(f"{mid}: element_content is empty")
+    s = sum(float(v) for v in ec.values())
+    if abs(s - 1.0) > 0.02:
+        raise ValueError(
+            f"{mid}: element_content sum = {s:.3f}, must be ≈ 1.0 (±0.02)"
+        )
+    kind = md.get("kind")
+    if kind not in ("base", "ferroalloy", "pure"):
+        raise ValueError(f"{mid}: kind must be base|ferroalloy|pure, got {kind}")
 
 
 def compute_cost(

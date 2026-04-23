@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from app.backend.cost_model import (
     Material, PriceSnapshot, compute_cost,
+    load_snapshot, save_snapshot, seed_snapshot,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _rub_seed() -> PriceSnapshot:
@@ -147,3 +151,48 @@ def test_compute_cost_zero_content_material_raises():
     )
     with pytest.raises(ValueError, match="не содержит"):
         compute_cost({"nb_pct": 0.1}, snap, mode="full")
+
+
+def test_load_seed_snapshot_yaml():
+    path = PROJECT_ROOT / "data" / "prices" / "seed_2026-04-23.yaml"
+    snapshot = load_snapshot(path)
+    assert snapshot.currency == "RUB"
+    assert snapshot.date == date(2026, 4, 23)
+    assert "scrap" in snapshot.materials
+    assert "FeNb-65" in snapshot.materials
+    assert snapshot.materials["FeNb-65"].element_content == {"Nb": 0.65, "Fe": 0.35}
+
+
+def test_save_then_load_roundtrip(tmp_path):
+    original = _full_seed_rub()
+    path = tmp_path / "snap.yaml"
+    save_snapshot(original, path)
+    loaded = load_snapshot(path)
+    assert loaded.date == original.date
+    assert loaded.currency == original.currency
+    assert set(loaded.materials) == set(original.materials)
+    for mid, mat in original.materials.items():
+        assert loaded.materials[mid].price_per_kg == pytest.approx(mat.price_per_kg)
+        assert loaded.materials[mid].element_content == mat.element_content
+
+
+def test_seed_snapshot_is_loadable():
+    snapshot = seed_snapshot()
+    assert snapshot.source == "seed"
+    assert "FeNb-65" in snapshot.materials
+
+
+def test_load_snapshot_invalid_content_sum_raises(tmp_path):
+    """Validation catches materials whose element_content sums far from 1."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "date: 2026-04-23\ncurrency: RUB\nsource: test\n"
+        "materials:\n"
+        "  FeMn-bad:\n"
+        "    kind: ferroalloy\n"
+        "    price_per_kg: 180.0\n"
+        "    element_content: {Mn: 0.80, Fe: 0.10}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"element_content sum"):
+        load_snapshot(bad)
