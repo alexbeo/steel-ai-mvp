@@ -94,6 +94,23 @@ else:
     st.sidebar.warning("Моделей нет. Сначала обучите.")
     selected_model = None
 
+# Class badge for active model
+if selected_model:
+    try:
+        import json as _json
+        _meta_path = PROJECT_ROOT / "models" / selected_model / "meta.json"
+        _meta = _json.loads(_meta_path.read_text(encoding="utf-8"))
+        _class_id = _meta.get("steel_class", "pipe_hsla")
+        _class_label = {
+            "pipe_hsla": "🔩 Pipe HSLA",
+            "en10083_qt": "🔨 EN 10083 Q&T",
+        }.get(_class_id, _class_id)
+        st.sidebar.caption(f"Класс: **{_class_label}**")
+        _meta_target = _meta.get("target", "?")
+        st.sidebar.caption(f"Target: `{_meta_target}`")
+    except Exception:
+        pass
+
 st.sidebar.divider()
 
 # Decision Log stats
@@ -131,7 +148,27 @@ tab_design, tab_train, tab_predict, tab_history = st.tabs([
 with tab_design:
     st.header("Поиск состава под целевые свойства")
     st.caption("Задайте ТЗ — получите Pareto-оптимальные кандидаты с прогнозом и валидацией")
-    
+
+    # Inverse design is HSLA-only in this iteration
+    _design_class_id = "pipe_hsla"
+    if selected_model:
+        try:
+            import json as _json
+            _meta_path_d = PROJECT_ROOT / "models" / selected_model / "meta.json"
+            _design_class_id = _json.loads(_meta_path_d.read_text()).get(
+                "steel_class", "pipe_hsla"
+            )
+        except Exception:
+            pass
+
+    if _design_class_id == "en10083_qt":
+        st.info(
+            "ℹ️ Inverse design пока работает только для **Pipe HSLA**. "
+            "Для класса EN 10083-2 Q&T используйте вкладку «📊 Прогноз». "
+            "Поддержка inverse design для Q&T запланирована на v2."
+        )
+        st.stop()
+
     col1, col2 = st.columns(2)
     
     with col1:
@@ -401,33 +438,57 @@ with tab_design:
 with tab_train:
     st.header("Обучение модели")
     st.caption("Обучает XGBoost с quantile regression для uncertainty estimation")
-    
+
+    from app.backend.steel_classes import (
+        available_steel_classes,
+        compute_features_for_class,
+        get_synthetic_generator,
+        load_steel_class,
+    )
+
+    _classes = available_steel_classes()
+    _class_opts = {c.id: f"{c.name} ({c.standard})" for c in _classes}
+    selected_class_id = st.selectbox(
+        "Класс стали",
+        options=[c.id for c in _classes],
+        format_func=lambda cid: _class_opts[cid],
+        key="train_class",
+    )
+    _profile = load_steel_class(selected_class_id)
+
     c1, c2 = st.columns(2)
     target_col = c1.selectbox(
         "Target property",
-        ["yield_strength_mpa", "tensile_strength_mpa", "elongation_pct", "kcv_neg60_j_cm2"],
+        options=[t.id for t in _profile.target_properties],
+        format_func=lambda tid: next(
+            t.label for t in _profile.target_properties if t.id == tid
+        ),
     )
-    n_trials = c2.slider("Optuna trials (чем больше, тем лучше, но медленнее)", 10, 150, 40)
-    
-    st.info("ℹ️ Обучение займёт 1-5 минут в зависимости от количества trials.")
-    
+    n_trials = c2.slider(
+        "Optuna trials (чем больше, тем лучше, но медленнее)", 10, 150, 40,
+    )
+
+    st.info(
+        f"ℹ️ Выбран класс: **{_profile.name}** · стандарт {_profile.standard}. "
+        f"Feature set: {len(_profile.feature_set)} колонок. "
+        f"Обучение займёт 1-5 минут в зависимости от количества trials."
+    )
+
     if st.button("🤖 Обучить модель", type="primary"):
         with st.spinner("Generating dataset & training..."):
-            from app.backend.data_curator import save_sample_dataset, clean_dataset
-            from app.backend.feature_eng import compute_hsla_features, PIPE_HSLA_FEATURE_SET
             from app.backend.model_trainer import train_model
-            
-            data_path = PROJECT_ROOT / "data" / "hsla_synthetic.parquet"
-            if not data_path.exists():
-                save_sample_dataset()
-            
-            df = pd.read_parquet(data_path)
-            df_clean, _ = clean_dataset(df)
-            df_feat = compute_hsla_features(df_clean)
-            feat = [f for f in PIPE_HSLA_FEATURE_SET if f in df_feat.columns]
-            
+
+            gen = get_synthetic_generator(_profile.synthetic_generator_name)
+            df_raw = gen()
+            df_feat = compute_features_for_class(df_raw, selected_class_id)
+            feat = [f for f in _profile.feature_set if f in df_feat.columns]
+
             progress = st.progress(0, text="Запускаю обучение...")
-            trained = train_model(df_feat, target_col, feat, n_optuna_trials=n_trials)
+            trained = train_model(
+                df_feat, target_col, feat,
+                n_optuna_trials=n_trials,
+                steel_class=selected_class_id,
+            )
             progress.progress(100, text="Готово!")
             
             st.success(f"✅ Модель {trained.version} готова")
@@ -457,7 +518,9 @@ with tab_train:
                 "cv_strategy": "group_kfold",
                 "feature_importance": trained.feature_importance,
                 "training_ranges": trained.training_ranges,
-                "steel_class": "pipe_hsla",
+                "steel_class": selected_class_id,
+                "expected_top_features": _profile.expected_top_features,
+                "physical_bounds": _profile.physical_bounds,
                 "ood_detector_configured": True,
                 "target": target_col,
             }
@@ -519,68 +582,76 @@ with tab_train:
 with tab_predict:
     st.header("Прогноз для заданного состава")
     st.caption("Введите химию и режим — получите прогноз с uncertainty")
-    
+
     if not selected_model:
         st.warning("Сначала обучите модель")
     else:
-        c1, c2, c3, c4 = st.columns(4)
-        c_pct = c1.number_input("C %", 0.02, 0.2, 0.08, step=0.005, format="%.4f")
-        si_pct = c2.number_input("Si %", 0.0, 0.8, 0.3, step=0.01)
-        mn_pct = c3.number_input("Mn %", 0.5, 2.0, 1.5, step=0.05)
-        p_pct = c4.number_input("P %", 0.0, 0.03, 0.012, step=0.001, format="%.4f")
-        
-        c5, c6, c7, c8 = st.columns(4)
-        s_pct = c5.number_input("S %", 0.0, 0.02, 0.003, step=0.001, format="%.4f")
-        cr_pct = c6.number_input("Cr %", 0.0, 0.5, 0.1, step=0.01)
-        ni_pct = c7.number_input("Ni %", 0.0, 0.5, 0.15, step=0.01)
-        mo_pct = c8.number_input("Mo %", 0.0, 0.2, 0.02, step=0.01)
-        
-        c9, c10, c11, c12 = st.columns(4)
-        cu_pct = c9.number_input("Cu %", 0.0, 0.5, 0.15, step=0.01)
-        al_pct = c10.number_input("Al %", 0.0, 0.1, 0.035, step=0.005, format="%.4f")
-        v_pct = c11.number_input("V %", 0.0, 0.15, 0.04, step=0.005, format="%.4f")
-        nb_pct = c12.number_input("Nb %", 0.0, 0.1, 0.03, step=0.005, format="%.4f")
-        
-        c13, c14, c15, c16 = st.columns(4)
-        ti_pct = c13.number_input("Ti %", 0.0, 0.05, 0.015, step=0.005, format="%.4f")
-        n_ppm = c14.number_input("N ppm", 20.0, 100.0, 55.0, step=5.0)
-        rolling_t = c15.number_input("T прокатки °C", 700.0, 900.0, 810.0, step=5.0)
-        cooling = c16.number_input("Скорость охл. °C/с", 5.0, 40.0, 18.0, step=1.0)
-        
+        import json as _json
+        from app.backend.model_trainer import load_model, predict_with_uncertainty
+        from app.backend.steel_classes import (
+            compute_features_for_class, load_steel_class,
+        )
+
+        _meta_path_p = PROJECT_ROOT / "models" / selected_model / "meta.json"
+        _meta_p = _json.loads(_meta_path_p.read_text())
+        _class_id_p = _meta_p.get("steel_class", "pipe_hsla")
+        _profile_p = load_steel_class(_class_id_p)
+
+        st.caption(f"Класс: **{_profile_p.name}** · target: `{_meta_p['target']}`")
+
+        row = {}
+        cols_per_row = 4
+        features_ui = [f for f in _profile_p.feature_set if f != "n_ppm"]
+        for chunk_start in range(0, len(features_ui), cols_per_row):
+            chunk = features_ui[chunk_start:chunk_start + cols_per_row]
+            cc = st.columns(len(chunk))
+            for col_idx, feat in enumerate(chunk):
+                lo, hi = _profile_p.physical_bounds.get(feat, (0.0, 1.0))
+                default = (lo + hi) / 2
+                step = (hi - lo) / 100 if (hi - lo) > 0 else 0.01
+                fmt = "%.4f" if feat.endswith("_pct") else "%.2f"
+                row[feat] = cc[col_idx].number_input(
+                    feat, min_value=float(lo), max_value=float(hi),
+                    value=float(default), step=float(step),
+                    key=f"pred_{feat}", format=fmt,
+                )
+        if "n_ppm" in _profile_p.feature_set:
+            row["n_ppm"] = st.number_input(
+                "n_ppm", 20.0, 100.0, 55.0, step=5.0, key="pred_n_ppm",
+            )
+
         if st.button("🔮 Предсказать", type="primary"):
-            from app.backend.model_trainer import load_model, predict_with_uncertainty
-            from app.backend.feature_eng import compute_hsla_features
-            
-            row = {
-                "c_pct": c_pct, "si_pct": si_pct, "mn_pct": mn_pct, "p_pct": p_pct,
-                "s_pct": s_pct, "cr_pct": cr_pct, "ni_pct": ni_pct, "mo_pct": mo_pct,
-                "cu_pct": cu_pct, "al_pct": al_pct, "v_pct": v_pct, "nb_pct": nb_pct,
-                "ti_pct": ti_pct, "n_ppm": n_ppm,
-                "rolling_finish_temp": rolling_t, "cooling_rate_c_per_s": cooling,
-            }
             df_input = pd.DataFrame([row])
-            df_feat = compute_hsla_features(df_input)
-            
+            df_feat = compute_features_for_class(df_input, _class_id_p)
+
             bundle = load_model(selected_model)
             pred = predict_with_uncertainty(bundle, df_feat)
-            
+
             mean = float(pred["prediction"].iloc[0])
-            lo = float(pred["lower_90"].iloc[0])
-            hi = float(pred["upper_90"].iloc[0])
+            lo_p = float(pred["lower_90"].iloc[0])
+            hi_p = float(pred["upper_90"].iloc[0])
             ood = bool(pred["ood_flag"].iloc[0])
-            
-            st.subheader(f"{bundle['meta']['target']}: **{mean:.1f}** ± {(hi - lo) / 2:.1f}")
-            st.caption(f"90% ДИ: [{lo:.1f}, {hi:.1f}]")
-            
+
+            _tgt_label = next(
+                (t.label for t in _profile_p.target_properties
+                 if t.id == _meta_p["target"]),
+                _meta_p["target"],
+            )
+            st.subheader(f"{_tgt_label}: **{mean:.1f}** ± {(hi_p - lo_p) / 2:.1f}")
+            st.caption(f"90% ДИ: [{lo_p:.1f}, {hi_p:.1f}]")
+
             if ood:
                 st.error("⚠️ Состав вне training distribution — прогноз ненадёжен!")
-            
-            st.markdown("**Производные параметры:**")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("CEV(IIW)", f"{df_feat['cev_iiw'].iloc[0]:.3f}")
-            c2.metric("Pcm", f"{df_feat['pcm'].iloc[0]:.3f}")
-            c3.metric("CEN", f"{df_feat['cen'].iloc[0]:.3f}")
-            c4.metric("Микролегирование", f"{df_feat['microalloying_sum'].iloc[0]:.4f}")
+
+            if _class_id_p == "pipe_hsla" and {
+                "cev_iiw", "pcm", "cen", "microalloying_sum"
+            }.issubset(df_feat.columns):
+                st.markdown("**Производные параметры:**")
+                c1d, c2d, c3d, c4d = st.columns(4)
+                c1d.metric("CEV(IIW)", f"{df_feat['cev_iiw'].iloc[0]:.3f}")
+                c2d.metric("Pcm", f"{df_feat['pcm'].iloc[0]:.3f}")
+                c3d.metric("CEN", f"{df_feat['cen'].iloc[0]:.3f}")
+                c4d.metric("Микролегирование", f"{df_feat['microalloying_sum'].iloc[0]:.4f}")
 
 
 # =========================================================================

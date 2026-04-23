@@ -93,9 +93,13 @@ training → inverse_design → validation → reporting
 - **Физические границы** на composition проверяются в `patterns.py` `_check_d07_physical_bounds` (жёсткие HSLA-диапазоны).
 - **Cost objective использует ferroalloy pricing** — `app/backend/cost_model.py` с `PriceSnapshot(date, currency, materials)`. Legacy `ELEMENT_PRICES_EUR_PER_KG` остаётся только как fallback при `price_snapshot=None`. Seed-прайс — `data/prices/seed_2026-04-23.yaml` (EUR, 11 позиций, покрывает весь `PIPE_HSLA_FEATURE_SET`). Каждый run с прайсом сохраняет snapshot в `decision_log/price_snapshots/<ts>.yaml` (gitignored) + запись в Decision Log с tag `cost_optimization`. Pattern Library проверяет C01–C04.
 
-### Target feature set
+### Target feature set / multi-class
 
-`PIPE_HSLA_FEATURE_SET` в `app/backend/feature_eng.py` — канонический список фичей для pipe-HSLA (химия + CEV/Pcm/CEN и ratios + процессные параметры). При смене класса стали или клиента его надо обновлять вместе с physical_bounds в `data_curator.py` и ожидаемыми top-features в `_check_m05_feature_importance_sanity`.
+Классы стали описаны YAML-профилями в `data/steel_classes/<id>.yaml` (`id, name, standard, feature_set, physical_bounds, target_properties, expected_top_features, synthetic_generator_name, process_params`). Реестр — `app/backend/steel_classes.py:AVAILABLE_CLASS_IDS`; сейчас: `pipe_hsla` (API 5L) и `en10083_qt` (EN 10083-2 Q&T carbon steels). **Номенклатура европейская** — советских марок нет.
+
+Класс — атрибут каждой обученной модели: `TrainedModel.steel_class` сохраняется в `models/<version>/meta.json`. Downstream-UI (prediction, design) читает активный класс из meta и ведёт себя соответственно: поля ввода в «Прогноз» подстраиваются под `feature_set`, target-label читается из профиля, вкладка «Дизайн» показывает banner для Q&T (inverse design остаётся HSLA-only в этой итерации).
+
+Physical bounds и expected top-features для Critic проверок `D07` / `M05` читаются из профиля через `_build_critic_context` (fallback на HSLA-константы для старых моделей без `meta["steel_class"]`). Synthetic-генераторы живут в `data_curator.py` (`generate_synthetic_hsla_dataset`, `generate_synthetic_en10083_qt_dataset`) и регистрируются в `steel_classes.get_synthetic_generator(name)`.
 
 ### UI и API
 
