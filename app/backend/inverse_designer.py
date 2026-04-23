@@ -7,9 +7,9 @@ Inverse Designer — NSGA-II multi-objective optimization.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
-from typing import Callable
 import numpy as np
 import pandas as pd
 
@@ -23,6 +23,10 @@ from pymoo.termination import get_termination
 
 from app.backend.feature_eng import compute_hsla_features
 from app.backend.model_trainer import load_model, predict_with_uncertainty
+from app.backend.cost_model import (
+    PriceSnapshot, CostMode, compute_cost, save_snapshot,
+    validate_snapshot, required_elements_for_design, PriceSnapshotIncomplete,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,17 +67,21 @@ class HSLADesignProblem(ElementwiseProblem):
         hard_constraints: dict[str, dict],
         variable_bounds: dict[str, list[float]],
         element_prices: dict[str, float],
+        price_snapshot: PriceSnapshot | None = None,
+        cost_mode: CostMode = "full",
     ):
         self.model_bundle = model_bundle
         self.targets = targets
         self.hard_constraints = hard_constraints
         self.variable_bounds = variable_bounds
         self.element_prices = element_prices
-        
+        self.price_snapshot = price_snapshot
+        self.cost_mode = cost_mode
+
         self.var_names = list(variable_bounds.keys())
         xl = np.array([variable_bounds[n][0] for n in self.var_names])
         xu = np.array([variable_bounds[n][1] for n in self.var_names])
-        
+
         # 3 objectives: distance_to_target, alloying_cost, prediction_uncertainty
         super().__init__(
             n_var=len(self.var_names),
@@ -103,12 +111,20 @@ class HSLADesignProblem(ElementwiseProblem):
                 f1 += ((target_val - spec["max"]) / max(abs(spec["max"]), 1)) ** 2
         
         # Objective 2: alloying cost
-        cost = 0.0
-        for elem, price in self.element_prices.items():
-            key = f"{elem}_pct"
-            if key in row:
-                cost += row[key] * 10 * price  # %→кг/т
-        f2 = cost
+        if self.price_snapshot is not None:
+            composition_pct = {k: v for k, v in row.items() if k.endswith("_pct")}
+            breakdown = compute_cost(
+                composition_pct, self.price_snapshot, mode=self.cost_mode
+            )
+            f2 = breakdown.total_per_ton
+        else:
+            # Legacy fallback: simple element-weighted cost (deprecated).
+            cost = 0.0
+            for elem, price in self.element_prices.items():
+                key = f"{elem}_pct"
+                if key in row:
+                    cost += row[key] * 10 * price  # %→кг/т
+            f2 = cost
         
         # Objective 3: uncertainty
         f3 = ci_width
@@ -140,22 +156,36 @@ def run_inverse_design(
     population_size: int = 80,
     n_generations: int = 60,
     random_seed: int = 42,
+    price_snapshot: PriceSnapshot | None = None,
+    cost_mode: CostMode = "full",
 ) -> dict:
     """
     Запускает NSGA-II.
     """
-    model_bundle = load_model(model_version)
     bounds = variable_bounds or VARIABLE_BOUNDS_HSLA
     constraints = hard_constraints or {}
-    
+
+    # Pre-check prices (before loading model — fail fast)
+    if price_snapshot is not None:
+        required = required_elements_for_design(bounds)
+        missing = validate_snapshot(price_snapshot, required)
+        if missing:
+            raise PriceSnapshotIncomplete(missing)
+        if cost_mode == "full" and "scrap" not in price_snapshot.materials:
+            raise PriceSnapshotIncomplete(["scrap (base material)"])
+
+    model_bundle = load_model(model_version)
+
     problem = HSLADesignProblem(
         model_bundle=model_bundle,
         targets=targets,
         hard_constraints=constraints,
         variable_bounds=bounds,
         element_prices=ELEMENT_PRICES_EUR_PER_KG,
+        price_snapshot=price_snapshot,
+        cost_mode=cost_mode,
     )
-    
+
     algorithm = NSGA2(
         pop_size=population_size,
         sampling=LHS(),
@@ -163,19 +193,51 @@ def run_inverse_design(
         mutation=PM(eta=20),
         eliminate_duplicates=True,
     )
-    
+
     res = minimize(
         problem, algorithm,
         termination=get_termination("n_gen", n_generations),
         seed=random_seed, verbose=False,
     )
-    
+
+    # Save snapshot to decision_log for audit trail
+    snapshot_path: str | None = None
+    if price_snapshot is not None:
+        from decision_log.logger import log_decision
+        run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snap_dir = Path(__file__).resolve().parents[2] / "decision_log" / "price_snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap_path = snap_dir / f"{run_ts}.yaml"
+        save_snapshot(price_snapshot, snap_path)
+        snapshot_path = str(snap_path)
+        log_decision(
+            phase="inverse_design",
+            decision=f"Inverse design с cost-optimization "
+                     f"(snapshot {price_snapshot.date}, {price_snapshot.currency}, mode={cost_mode})",
+            reasoning=f"Source: {price_snapshot.source}. "
+                      f"{len(price_snapshot.materials)} материалов. "
+                      f"Legacy ELEMENT_PRICES_EUR_PER_KG отключён для этого run.",
+            context={
+                "snapshot_path": snapshot_path,
+                "currency": price_snapshot.currency,
+                "n_materials": len(price_snapshot.materials),
+                "cost_mode": cost_mode,
+            },
+            author="inverse_designer",
+            tags=["cost_optimization", str(price_snapshot.date)],
+        )
+
     if res.X is None:
-        return {"pareto_candidates": [], "n_candidates": 0,
-                "objectives_normalized": False, "n_objectives": 3,
-                "variable_bounds": bounds}
-    
-    # Собираем candidates
+        return {
+            "pareto_candidates": [], "n_candidates": 0,
+            "objectives_normalized": False, "n_objectives": 3,
+            "variable_bounds": bounds,
+            "cost_currency": price_snapshot.currency if price_snapshot else "EUR (legacy)",
+            "cost_mode": cost_mode if price_snapshot else "legacy",
+            "price_snapshot_path": snapshot_path,
+        }
+
+    # Build candidates
     candidates = []
     var_names = list(bounds.keys())
     for i, x in enumerate(res.X):
@@ -183,7 +245,14 @@ def run_inverse_design(
         df = pd.DataFrame([row])
         df_feat = compute_hsla_features(df)
         pred = predict_with_uncertainty(model_bundle, df_feat)
-        
+
+        breakdown_dict = None
+        if price_snapshot is not None:
+            composition_pct = {k: v for k, v in row.items() if k.endswith("_pct")}
+            breakdown_dict = asdict(
+                compute_cost(composition_pct, price_snapshot, cost_mode)
+            )
+
         candidates.append({
             "idx": i,
             "composition": {k: round(v, 4) for k, v in row.items() if k.endswith("_pct")},
@@ -206,12 +275,14 @@ def run_inverse_design(
                 "alloying_cost": float(res.F[i, 1]),
                 "prediction_uncertainty": float(res.F[i, 2]),
             },
+            "cost": breakdown_dict,
         })
-    
-    # Сортировка: по distance_to_target сначала, потом по стоимости
-    candidates.sort(key=lambda c: (c["objectives"]["distance_to_target"],
-                                    c["objectives"]["alloying_cost"]))
-    
+
+    candidates.sort(key=lambda c: (
+        c["objectives"]["distance_to_target"],
+        c["objectives"]["alloying_cost"],
+    ))
+
     return {
         "pareto_candidates": candidates,
         "n_candidates": len(candidates),
@@ -219,6 +290,9 @@ def run_inverse_design(
         "n_objectives": 3,
         "variable_bounds": bounds,
         "training_variable_ranges": model_bundle["meta"].get("training_ranges", {}),
+        "cost_currency": price_snapshot.currency if price_snapshot else "EUR (legacy)",
+        "cost_mode": cost_mode if price_snapshot else "legacy",
+        "price_snapshot_path": snapshot_path,
     }
 
 
@@ -250,6 +324,8 @@ class InverseDesignerAgent:
                 hard_constraints=constraints,
                 population_size=task.get("population_size", 80),
                 n_generations=task.get("n_generations", 60),
+                price_snapshot=task.get("price_snapshot"),
+                cost_mode=task.get("cost_mode", "full"),
             )
             
             log_decision(
@@ -303,7 +379,7 @@ if __name__ == "__main__":
     )
     
     print(f"Найдено кандидатов: {result['n_candidates']}")
-    print(f"\nТоп-3 кандидата:")
+    print("\nТоп-3 кандидата:")
     for c in result["pareto_candidates"][:3]:
         print(f"\n  #{c['idx']}:")
         print(f"    Состав: C={c['composition']['c_pct']}, Mn={c['composition']['mn_pct']}, "

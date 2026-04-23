@@ -10,6 +10,7 @@ from app.backend.cost_model import (
     Material, PriceSnapshot, compute_cost,
     load_snapshot, save_snapshot, seed_snapshot,
     validate_snapshot, required_elements_for_design,
+    PriceSnapshotIncomplete,
 )
 from pattern_library.patterns import run_all_patterns, Phase
 
@@ -323,3 +324,53 @@ def test_pattern_c04_element_missing_in_snapshot():
     warnings = run_all_patterns(ctx, phase=Phase.INVERSE_DESIGN)
     ids = {w["pattern_id"] for w in warnings}
     assert "C04" in ids
+
+
+@pytest.mark.integration
+def test_run_inverse_design_with_snapshot_adds_breakdown():
+    """End-to-end: prep prices, call run_inverse_design, check candidates carry cost."""
+    from app.backend.inverse_designer import run_inverse_design
+    from app.backend.model_trainer import train_model
+    from app.backend.data_curator import save_sample_dataset
+    from app.backend.feature_eng import compute_hsla_features, PIPE_HSLA_FEATURE_SET
+    import pandas as pd
+
+    # Reuse cached data if present, otherwise generate tiny sample.
+    data_path = PROJECT_ROOT / "data" / "hsla_synthetic.parquet"
+    if not data_path.exists():
+        save_sample_dataset()
+    df = pd.read_parquet(data_path)
+    df_feat = compute_hsla_features(df)
+    feat = [f for f in PIPE_HSLA_FEATURE_SET if f in df_feat.columns]
+    trained = train_model(df_feat, "yield_strength_mpa", feat, n_optuna_trials=5)
+
+    snapshot = seed_snapshot()
+    result = run_inverse_design(
+        model_version=trained.version,
+        targets={"yield_strength_mpa": {"min": 485, "max": 580}},
+        hard_constraints={"cev_iiw": {"max": 0.43}},
+        population_size=20, n_generations=10,
+        price_snapshot=snapshot, cost_mode="full",
+    )
+    assert result["n_candidates"] >= 1
+    c = result["pareto_candidates"][0]
+    assert c.get("cost") is not None
+    assert c["cost"]["currency"] == "RUB"
+    assert c["cost"]["mode"] == "full"
+    assert 20_000 <= c["cost"]["total_per_ton"] <= 200_000
+    assert any(x["material_id"] == "scrap" for x in c["cost"]["contributions"])
+
+
+def test_run_inverse_design_missing_price_raises():
+    """Pre-check catches missing prices before model load (fast test)."""
+    from app.backend.inverse_designer import run_inverse_design
+    partial = _rub_seed()
+    with pytest.raises(PriceSnapshotIncomplete) as exc:
+        run_inverse_design(
+            model_version="dummy",
+            targets={"yield_strength_mpa": {"min": 485}},
+            price_snapshot=partial, cost_mode="full",
+        )
+    # partial has only Mn, Nb → Ti/Mo/… missing
+    assert len(exc.value.missing) > 0
+    assert "Ti" in exc.value.missing or "Mo" in exc.value.missing
