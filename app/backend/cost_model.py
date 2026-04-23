@@ -4,12 +4,19 @@ Cost model for HSLA steel inverse design.
 Ferroalloy-based pricing: each alloying element maps to a preferred
 ferroalloy (FeNb-65, FeMn-80, ...). Compute cost per ton of steel
 given a composition (in %) and a PriceSnapshot.
+
+Naming convention inside this module:
+- ``Material.element_content`` keys are **capitalized element symbols**
+  (``"Mn"``, ``"Nb"``, ``"Fe"``) carrying **mass fractions in [0, 1]**.
+- Composition dicts consumed by ``compute_cost`` use the rest of the
+  project's ``{element}_pct`` lowercase keys (``"mn_pct"``, ``"nb_pct"``)
+  carrying values **in percent** (e.g. ``1.5`` means 1.5%). ``compute_cost``
+  translates between the two.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Literal
 
 Kind = Literal["base", "ferroalloy", "pure"]
