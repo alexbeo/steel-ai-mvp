@@ -74,6 +74,7 @@ training → inverse_design → validation → reporting
 - `Severity.HIGH` → `Verdict.BLOCK` → human checkpoint. `MEDIUM` → `PASS_WITH_WARNINGS`. Отсутствие триггеров → `PASS`.
 - Новые проверки добавляются **только** правкой `patterns.py` и дополнением списка `PATTERNS`. README `pattern_library/README.md` — это прозаическое описание ~20 паттернов для MVP, используйте его как справочник при расширении (D01–V01 там описаны подробно, не все из них реализованы в коде).
 - `_build_critic_context()` в `engine.py` — **единственное** место, где решается, какие ключи попадут в `ctx` для проверок. Если добавляете новый паттерн, зависящий от новых данных, расширяйте этот метод.
+- **LLM-Critic (v2)** — опциональный второй слой review на фазе `training`. Активируется через `ANTHROPIC_API_KEY` в env; при отсутствии ключа — тихий fallback на Pattern Library-only. Использует `claude-sonnet-4-6` через `app/backend/critic_llm.py`, prompt caching (`cache_control="ephemeral"`), structured output через `tool_use`. Observations информационные: попадают в `CriticReport.exploratory_observations` (`list[dict]`), отображаются в UI после Pattern Library warnings, **не влияют** на `Verdict`.
 
 ### Decision Log — долгая память проекта
 

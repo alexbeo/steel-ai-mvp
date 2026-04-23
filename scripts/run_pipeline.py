@@ -39,7 +39,7 @@ def make_orchestrator() -> Orchestrator:
     }
     return Orchestrator(
         agents=agents,
-        critic=Critic(use_llm=False),
+        critic=Critic(use_llm=True),
         human_in_the_loop=True,
         on_human_checkpoint=cli_checkpoint_handler,
     )

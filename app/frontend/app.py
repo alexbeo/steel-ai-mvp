@@ -6,6 +6,7 @@ Steel AI MVP — Streamlit UI для демо.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -98,6 +99,13 @@ try:
         st.sidebar.caption(f"Последнее: {last['decision'][:40]}")
 except Exception as e:
     st.sidebar.error(f"Decision Log: {e}")
+
+# LLM-Critic status
+_llm_ok = bool(os.environ.get("ANTHROPIC_API_KEY"))
+st.sidebar.metric(
+    "🤖 LLM-Critic",
+    "✓ активен" if _llm_ok else "— нет ключа",
+)
 
 
 # =========================================================================
@@ -428,15 +436,23 @@ with tab_train:
             critic_ctx = {
                 "r2_train": trained.metrics.r2_train,
                 "r2_val": trained.metrics.r2_val,
+                "r2_test": trained.metrics.r2_test,
+                "mae_test": trained.metrics.mae_test,
+                "rmse_test": trained.metrics.rmse_test,
                 "coverage_90_ci": trained.metrics.coverage_90_ci,
+                "n_train": trained.metrics.n_train,
+                "n_val": trained.metrics.n_val,
+                "n_test": trained.metrics.n_test,
                 "prediction_has_ci": True,
                 "has_time_column": True,
                 "has_groups": True,
                 "split_strategy": "time_based",
                 "cv_strategy": "group_kfold",
                 "feature_importance": trained.feature_importance,
+                "training_ranges": trained.training_ranges,
                 "steel_class": "pipe_hsla",
                 "ood_detector_configured": True,
+                "target": target_col,
             }
             warnings = run_all_patterns(critic_ctx, phase=Phase.TRAINING)
             if warnings:
@@ -452,7 +468,34 @@ with tab_train:
                         st.info(msg)
             else:
                 st.success("✓ Critic не нашёл проблем")
-            
+
+            # LLM-Critic (Claude Sonnet 4.6) — only runs with ANTHROPIC_API_KEY
+            from app.backend.critic_llm import make_llm_critic
+            from dataclasses import asdict
+            _llm = make_llm_critic()
+            if _llm is not None:
+                with st.spinner("🤖 LLM-Critic проверяет..."):
+                    llm_obs = _llm.review_training(critic_ctx)
+                    st.session_state["llm_observations"] = [
+                        asdict(o) for o in llm_obs
+                    ]
+
+            llm_obs_rendered = st.session_state.get("llm_observations", [])
+            if llm_obs_rendered:
+                st.subheader("🤖 LLM-Critic (Claude Sonnet 4.6)")
+                for o in llm_obs_rendered:
+                    sev = o["severity"]
+                    msg = (f"**[{sev}] {o['category']}:** {o['message']}\n\n"
+                           f"💡 {o['rationale']}")
+                    if sev == "HIGH":
+                        st.error(msg)
+                    elif sev == "MEDIUM":
+                        st.warning(msg)
+                    else:
+                        st.info(msg)
+            elif _llm is not None:
+                st.caption("🤖 LLM-Critic: проблем не обнаружено")
+
             # Feature importance chart
             st.subheader("Feature importance")
             imp_df = pd.DataFrame(
