@@ -6,8 +6,7 @@ from datetime import date
 import pytest
 
 from app.backend.cost_model import (
-    Material, PriceSnapshot, CostMode,
-    compute_cost, PriceSnapshotIncomplete,
+    Material, PriceSnapshot, compute_cost,
 )
 
 
@@ -112,3 +111,39 @@ def test_compute_cost_unknown_element_raises():
     snapshot = _full_seed_rub()
     with pytest.raises(ValueError, match="Нет маппинга"):
         compute_cost({"w_pct": 0.5}, snapshot, mode="full")
+
+
+def test_compute_cost_over_alloy_clamps_base_to_zero(caplog):
+    """Degenerate NSGA-II boundary: total alloy > 1000 kg/t → base_mass=0 + warning."""
+    snapshot = _full_seed_rub()
+    with caplog.at_level("WARNING", logger="app.backend.cost_model"):
+        breakdown = compute_cost({"mn_pct": 90.0}, snapshot, mode="full")
+    base = next(c for c in breakdown.contributions if c.material_id == "scrap")
+    assert base.mass_kg_per_ton_steel == 0.0
+    assert base.contribution_per_ton == 0.0
+    assert any("exceeds 1000" in r.message for r in caplog.records)
+
+
+def test_compute_cost_incremental_does_not_require_scrap():
+    """Incremental mode does not need scrap — plausible for alloying-only analyses."""
+    snap = PriceSnapshot(
+        date=date(2026, 4, 23), currency="RUB",
+        materials={
+            "FeNb-65": Material("FeNb-65", "ferroalloy", 3600.0, {"Nb": 0.65, "Fe": 0.35}),
+        },
+    )
+    breakdown = compute_cost({"nb_pct": 0.65}, snap, mode="incremental")
+    assert breakdown.total_per_ton == pytest.approx(36_000.0)
+
+
+def test_compute_cost_zero_content_material_raises():
+    """Misconfigured material with zero content for its keyed element → ValueError."""
+    snap = PriceSnapshot(
+        date=date(2026, 4, 23), currency="RUB",
+        materials={
+            "scrap":   Material("scrap",   "base",       42.0, {"Fe": 1.0}),
+            "FeNb-65": Material("FeNb-65", "ferroalloy", 3600.0, {"Nb": 0.0, "Fe": 1.0}),
+        },
+    )
+    with pytest.raises(ValueError, match="не содержит"):
+        compute_cost({"nb_pct": 0.1}, snap, mode="full")

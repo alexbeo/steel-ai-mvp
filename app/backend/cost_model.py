@@ -15,9 +15,12 @@ Naming convention inside this module:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 Kind = Literal["base", "ferroalloy", "pure"]
 Currency = Literal["RUB", "USD", "EUR"]
@@ -142,6 +145,13 @@ def compute_cost(
             contribution_per_ton=contribution,
         ))
         total_alloy_mass += alloy_mass
+
+    if total_alloy_mass > 1000.0:
+        logger.warning(
+            "total_alloy_mass=%.1f kg/t exceeds 1000 — base mass clamped to 0 "
+            "(degenerate composition, possibly NSGA-II boundary point)",
+            total_alloy_mass,
+        )
 
     if mode == "full":
         if "scrap" not in snapshot.materials:
