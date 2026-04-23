@@ -253,3 +253,33 @@ def compute_cost(
         mode=mode,
         currency=snapshot.currency,
     )
+
+
+def required_elements_for_design(variable_bounds: dict) -> set[str]:
+    """From VARIABLE_BOUNDS_HSLA-style dict → set of elements that need pricing.
+
+    Skips NON_PRICED_ELEMENTS (C/P/S/N) and non-chemistry variables
+    (rolling_finish_temp, cooling_rate_c_per_s, n_ppm).
+    """
+    required: set[str] = set()
+    for var in variable_bounds:
+        if not var.endswith("_pct"):
+            continue
+        elem = var[:-4].capitalize()
+        if elem in NON_PRICED_ELEMENTS:
+            continue
+        required.add(elem)
+    return required
+
+
+def validate_snapshot(
+    snapshot: PriceSnapshot, required_elements: set[str]
+) -> list[str]:
+    """Return sorted list of required elements NOT covered by snapshot.
+
+    Empty list = snapshot is sufficient for the given design space.
+    """
+    covered: set[str] = set()
+    for m in snapshot.materials.values():
+        covered.update(m.element_content.keys())
+    return sorted(required_elements - covered)

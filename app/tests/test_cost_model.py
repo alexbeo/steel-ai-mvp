@@ -9,6 +9,7 @@ import pytest
 from app.backend.cost_model import (
     Material, PriceSnapshot, compute_cost,
     load_snapshot, save_snapshot, seed_snapshot,
+    validate_snapshot, required_elements_for_design,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -214,3 +215,38 @@ def test_load_snapshot_invalid_content_sum_raises(tmp_path):
     )
     with pytest.raises(ValueError, match=r"element_content sum"):
         load_snapshot(bad)
+
+
+def test_required_elements_for_design_skips_non_priced_and_nonchem():
+    bounds = {
+        "c_pct": [0.04, 0.12],
+        "mn_pct": [0.9, 1.75],
+        "nb_pct": [0.0, 0.06],
+        "n_ppm": [30, 80],
+        "rolling_finish_temp": [750.0, 850.0],
+    }
+    required = required_elements_for_design(bounds)
+    # C is non-priced, n_ppm/rolling_finish_temp — skipped entirely.
+    assert required == {"Mn", "Nb"}
+
+
+def test_validate_snapshot_returns_missing_elements():
+    snapshot = _rub_seed()                    # only scrap, FeMn-80, FeNb-65
+    required = {"Mn", "Nb", "Ti", "Mo"}
+    missing = validate_snapshot(snapshot, required)
+    assert missing == ["Mo", "Ti"]           # alphabetical
+
+
+def test_validate_snapshot_all_covered():
+    snapshot = _full_seed_rub()
+    required = {"Mn", "Nb", "Ti"}
+    assert validate_snapshot(snapshot, required) == []
+
+
+def test_full_seed_covers_all_hsla_design_elements():
+    from app.backend.inverse_designer import VARIABLE_BOUNDS_HSLA
+    snapshot = seed_snapshot()
+    missing = validate_snapshot(
+        snapshot, required_elements_for_design(VARIABLE_BOUNDS_HSLA)
+    )
+    assert missing == []
