@@ -86,3 +86,51 @@ def test_compute_features_for_class_adds_derived_for_hsla():
     out = compute_features_for_class(df, "pipe_hsla")
     assert "cev_iiw" in out.columns
     assert "pcm" in out.columns
+
+
+def test_train_model_persists_steel_class(tmp_path, monkeypatch):
+    """train_model stores steel_class in meta.json and TrainedModel."""
+    import json
+    from app.backend import model_trainer
+    from app.backend.feature_eng import PIPE_HSLA_FEATURE_SET, compute_hsla_features
+
+    monkeypatch.setattr(model_trainer, "MODELS_DIR", tmp_path)
+
+    gen = get_synthetic_generator("pipe_hsla")
+    df = gen(n_samples=500, random_seed=1)
+    df_feat = compute_hsla_features(df)
+    feat = [f for f in PIPE_HSLA_FEATURE_SET if f in df_feat.columns]
+
+    trained = model_trainer.train_model(
+        df_feat, "yield_strength_mpa", feat,
+        n_optuna_trials=3, steel_class="pipe_hsla",
+    )
+    assert trained.steel_class == "pipe_hsla"
+    assert trained.version.startswith("hsla_")
+
+    meta_path = tmp_path / trained.version / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    assert meta["steel_class"] == "pipe_hsla"
+
+    bundle = model_trainer.load_model(trained.version)
+    assert bundle["meta"]["steel_class"] == "pipe_hsla"
+
+
+def test_train_model_en10083_qt_smoke(tmp_path, monkeypatch):
+    """End-to-end Q&T training on synthetic data."""
+    from app.backend import model_trainer
+    from app.backend.steel_classes import load_steel_class
+
+    monkeypatch.setattr(model_trainer, "MODELS_DIR", tmp_path)
+
+    profile = load_steel_class("en10083_qt")
+    gen = get_synthetic_generator("en10083_qt")
+    df = gen(n_samples=1500, random_seed=7)
+
+    trained = model_trainer.train_model(
+        df, "hardness_hrc", profile.feature_set,
+        n_optuna_trials=5, steel_class="en10083_qt",
+    )
+    assert trained.steel_class == "en10083_qt"
+    assert trained.version.startswith("en10083qt_")
+    assert trained.metrics.r2_test > 0.6

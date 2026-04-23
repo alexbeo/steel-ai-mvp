@@ -55,6 +55,7 @@ class TrainedModel:
     has_ood_detector: bool
     split_strategy: str
     cv_strategy: str
+    steel_class: str = "pipe_hsla"
 
 
 # =========================================================================
@@ -103,6 +104,7 @@ def train_model(
     feature_list: list[str],
     n_optuna_trials: int = 40,
     random_seed: int = 42,
+    steel_class: str = "pipe_hsla",
 ) -> TrainedModel:
     import xgboost as xgb
     import optuna
@@ -199,7 +201,8 @@ def train_model(
     }
     
     # 9. Save artifact
-    version = f"hsla_{target.replace('_mpa', '').replace('_j_cm2', '')}_xgb_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    version_prefix = {"pipe_hsla": "hsla", "en10083_qt": "en10083qt"}.get(steel_class, "model")
+    version = f"{version_prefix}_{target.replace('_mpa', '').replace('_j_cm2', '')}_xgb_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     artifact_dir = MODELS_DIR / version
     artifact_dir.mkdir(parents=True, exist_ok=True)
     
@@ -217,15 +220,17 @@ def train_model(
             "metrics": asdict(metrics),
             "feature_importance": importance,
             "training_ranges": training_ranges,
+            "steel_class": steel_class,
             "trained_at": datetime.now().isoformat(),
         }, f, indent=2, ensure_ascii=False)
-    
+
     return TrainedModel(
         version=version, target=target, feature_list=feature_list,
         artifact_path=str(artifact_dir), metrics=metrics,
         feature_importance=importance, training_ranges=training_ranges,
         has_uncertainty=True, has_ood_detector=True,
         split_strategy="time_based", cv_strategy="group_kfold",
+        steel_class=steel_class,
     )
 
 
