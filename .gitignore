@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.Python
+env/
+venv/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data & models (большие файлы)
+data/*.parquet
+data/*.csv
+data/*.xlsx
+models/*/
+!models/.gitkeep
+
+# Reports
+reports/*.html
+reports/*.pdf
+
+# Decision log (SQLite)
+decision_log/*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+*.pem

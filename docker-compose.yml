@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  steel-ai:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./reports:/app/reports
+      - ./decision_log:/app/decision_log
+    environment:
+      - PYTHONPATH=/app
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}  # опционально для Critic LLM
+    restart: unless-stopped
