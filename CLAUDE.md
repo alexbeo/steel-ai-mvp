@@ -90,6 +90,7 @@ training → inverse_design → validation → reporting
 - **Inverse design bounds** не выходят за training range более чем на ±10% (I01). Запрашивайте `training_ranges` из модели.
 - **Multi-objective — нормализуем** (I02). Pareto size < 5 считается проблемой (I03).
 - **Физические границы** на composition проверяются в `patterns.py` `_check_d07_physical_bounds` (жёсткие HSLA-диапазоны).
+- **Cost objective использует ferroalloy pricing** — `app/backend/cost_model.py` с `PriceSnapshot(date, currency, materials)`. Legacy `ELEMENT_PRICES_EUR_PER_KG` остаётся только как fallback при `price_snapshot=None`. Seed-прайс — `data/prices/seed_2026-04-23.yaml` (RUB, 11 позиций, покрывает весь `PIPE_HSLA_FEATURE_SET`). Каждый run с прайсом сохраняет snapshot в `decision_log/price_snapshots/<ts>.yaml` (gitignored) + запись в Decision Log с tag `cost_optimization`. Pattern Library проверяет C01–C04.
 
 ### Target feature set
 

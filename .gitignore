@@ -22,8 +22,9 @@ models/*/
 reports/*.html
 reports/*.pdf
 
-# Decision log (SQLite)
+# Decision log (SQLite) + runtime price snapshots (per-run audit YAMLs)
 decision_log/*.db
+decision_log/price_snapshots/
 
 # IDE
 .vscode/
