@@ -42,3 +42,4 @@ Thumbs.db
 *.pem
 data/public_matminer.parquet
 data/public_matminer_stats.json
+docs/public_data_spike_metrics.json
