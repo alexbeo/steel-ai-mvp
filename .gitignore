@@ -40,3 +40,5 @@ Thumbs.db
 .env
 .env.local
 *.pem
+data/public_matminer.parquet
+data/public_matminer_stats.json
