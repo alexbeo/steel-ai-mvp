@@ -39,6 +39,8 @@ class TrainingMetrics:
     n_train: int
     n_val: int
     n_test: int
+    coverage_90_ci_raw: float = 0.0
+    conformal_correction_mpa: float = 0.0
 
 
 @dataclass
@@ -153,7 +155,8 @@ def train_model(
     main_model = xgb.XGBRegressor(**final_params, objective="reg:squarederror")
     main_model.fit(X_trainval, y_trainval, verbose=False)
     
-    # 4. Quantile models for uncertainty
+    # 4. Quantile models — trained on train only so val stays clean
+    # for split-conformal calibration (Romano et al. 2019).
     quantile_models = {}
     for alpha, name in [(0.05, "q05"), (0.95, "q95")]:
         qm = xgb.XGBRegressor(
@@ -161,18 +164,34 @@ def train_model(
             objective="reg:quantileerror",
             quantile_alpha=alpha,
         )
-        qm.fit(X_trainval, y_trainval, verbose=False)
+        qm.fit(X_train, y_train, verbose=False)
         quantile_models[name] = qm
-    
-    # 5. Eval
+
+    # 4b. Split-conformal calibration. Nonconformity score
+    #     E_i = max(q05(x_i) - y_i, y_i - q95(x_i)) on validation set.
+    #     Q = ceil((n_cal+1) * (1-α)) / n_cal quantile of E.
+    #     Widening [q05, q95] by ±Q brings empirical coverage ≥ 1-α under
+    #     exchangeability (here α=0.10 for nominal 90% CI).
+    lo_val = quantile_models["q05"].predict(X_val)
+    hi_val = quantile_models["q95"].predict(X_val)
+    nonconformity = np.maximum(lo_val - y_val.values, y_val.values - hi_val)
+    n_cal = len(y_val)
+    conformal_level = min(np.ceil((n_cal + 1) * 0.90) / n_cal, 1.0)
+    conformal_correction = float(np.quantile(nonconformity, conformal_level))
+
+    # 5. Eval — report both raw and conformal-corrected coverage
     y_pred_train = main_model.predict(X_train)
     y_pred_val = main_model.predict(X_val)
     y_pred_test = main_model.predict(X_test)
-    
-    lower = quantile_models["q05"].predict(X_test)
-    upper = quantile_models["q95"].predict(X_test)
+
+    raw_lower = quantile_models["q05"].predict(X_test)
+    raw_upper = quantile_models["q95"].predict(X_test)
+    raw_coverage = float(((y_test >= raw_lower) & (y_test <= raw_upper)).mean())
+
+    lower = raw_lower - conformal_correction
+    upper = raw_upper + conformal_correction
     coverage = float(((y_test >= lower) & (y_test <= upper)).mean())
-    
+
     metrics = TrainingMetrics(
         r2_train=float(r2_score(y_train, y_pred_train)),
         r2_val=float(r2_score(y_val, y_pred_val)),
@@ -180,10 +199,17 @@ def train_model(
         mae_test=float(mean_absolute_error(y_test, y_pred_test)),
         rmse_test=float(np.sqrt(mean_squared_error(y_test, y_pred_test))),
         coverage_90_ci=coverage,
+        coverage_90_ci_raw=raw_coverage,
+        conformal_correction_mpa=conformal_correction,
         n_train=len(train_idx), n_val=len(val_idx), n_test=len(test_idx),
     )
-    logger.info("Metrics: R² test=%.3f, MAE=%.2f, coverage 90%%=%.2f",
-                metrics.r2_test, metrics.mae_test, metrics.coverage_90_ci)
+    logger.info(
+        "Metrics: R² test=%.3f, MAE=%.2f, coverage 90%% raw=%.2f → "
+        "conformal-corrected=%.2f (Q=%.1f)",
+        metrics.r2_test, metrics.mae_test,
+        metrics.coverage_90_ci_raw, metrics.coverage_90_ci,
+        metrics.conformal_correction_mpa,
+    )
     
     # 6. Feature importance
     importance = dict(zip(feature_list, main_model.feature_importances_.tolist()))
@@ -235,6 +261,7 @@ def train_model(
             "steel_class": steel_class,
             "data_source": data_source,
             "data_source_doi": data_source_doi,
+            "conformal_correction_mpa": conformal_correction,
             "trained_at": datetime.now().isoformat(),
         }, f, indent=2, ensure_ascii=False)
 
@@ -277,16 +304,21 @@ def predict_with_uncertainty(
     X = df_input[feature_list]
     
     pred = model_bundle["main"].predict(X)
-    lo = model_bundle["q05"].predict(X)
-    hi = model_bundle["q95"].predict(X)
-    
-    # OOD
+    raw_lo = model_bundle["q05"].predict(X)
+    raw_hi = model_bundle["q95"].predict(X)
+
+    # Split-conformal correction baked at training time; older models
+    # without this field get Q=0 (raw quantiles).
+    q_correction = float(meta.get("conformal_correction_mpa", 0.0))
+    lo = raw_lo - q_correction
+    hi = raw_hi + q_correction
+
     ood = model_bundle["ood"]
     comp = X[ood["comp_cols"]].values
     log_prob = ood["gmm"].score_samples(comp)
-    threshold = np.percentile(log_prob, 1)  # 1st percentile training as threshold
+    threshold = np.percentile(log_prob, 1)
     ood_flag = log_prob < threshold - 5
-    
+
     result = pd.DataFrame({
         "prediction": pred,
         "lower_90": lo,
