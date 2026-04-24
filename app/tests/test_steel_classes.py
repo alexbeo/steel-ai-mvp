@@ -41,7 +41,7 @@ def test_load_en10083_profile():
 
 def test_available_steel_classes_registry():
     profiles = available_steel_classes()
-    assert len(profiles) == 2
+    assert len(profiles) == len(AVAILABLE_CLASS_IDS)
     ids = {p.id for p in profiles}
     assert ids == set(AVAILABLE_CLASS_IDS)
     for p in profiles:

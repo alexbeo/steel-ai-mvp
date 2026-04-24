@@ -196,6 +196,40 @@ def save_sample_dataset_en10083_qt(path: Path | None = None) -> Path:
     return path
 
 
+def load_real_agrawal_fatigue_dataset(
+    n_samples: int = 437, random_seed: int = 42
+) -> pd.DataFrame:
+    """Real 437-record Agrawal 2014 NIMS fatigue dataset.
+
+    The name mirrors the `generate_synthetic_*` pattern so the class registry
+    can plug it into `get_synthetic_generator` without a parallel code path,
+    but this loader serves REAL peer-reviewed data (NIMS MatNavi, Agrawal
+    IMMI 3:8, 2014).
+
+    Shuffles rows before assigning sequential `heat_date` because Agrawal's
+    raw file groups carburizing records at the end — without shuffle,
+    time_group_split's last-20% test hold-out inherits that class skew.
+
+    `campaign_id` buckets heats into ~44 groups of ~10 records each so
+    GroupKFold(n_splits=6) has enough distinct groups.
+    """
+    parquet_path = DATA_DIR / "agrawal_nims_fatigue.parquet"
+    if not parquet_path.exists():
+        raise FileNotFoundError(
+            f"{parquet_path} missing — run "
+            "scripts/fetch_agrawal_nims_fatigue.py first"
+        )
+    df = pd.read_parquet(parquet_path)
+
+    df = df.sample(frac=1.0, random_state=random_seed).reset_index(drop=True)
+    if n_samples < len(df):
+        df = df.iloc[:n_samples].reset_index(drop=True)
+
+    df["heat_date"] = pd.date_range("2020-01-01", periods=len(df), freq="1D")
+    df["campaign_id"] = [f"C-{i // 10:03d}" for i in range(len(df))]
+    return df
+
+
 # =========================================================================
 # Clean and validate
 # =========================================================================

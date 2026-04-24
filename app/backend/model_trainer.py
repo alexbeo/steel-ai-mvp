@@ -200,7 +200,11 @@ def train_model(
     }
     
     # 9. Save artifact
-    version_prefix = {"pipe_hsla": "hsla", "en10083_qt": "en10083qt"}.get(steel_class, "model")
+    version_prefix = {
+        "pipe_hsla": "hsla",
+        "en10083_qt": "en10083qt",
+        "fatigue_carbon_steel": "fatigue",
+    }.get(steel_class, "model")
     version = f"{version_prefix}_{target.replace('_mpa', '').replace('_j_cm2', '')}_xgb_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     artifact_dir = MODELS_DIR / version
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -210,6 +214,15 @@ def train_model(
     quantile_models["q95"].save_model(str(artifact_dir / "q95.json"))
     with open(artifact_dir / "ood_detector.pkl", "wb") as f:
         pickle.dump({"gmm": ood_detector, "comp_cols": comp_cols}, f)
+    try:
+        from app.backend.steel_classes import load_steel_class
+        _profile = load_steel_class(steel_class)
+        data_source = _profile.data_source
+        data_source_doi = _profile.data_source_doi
+    except Exception:
+        data_source = None
+        data_source_doi = None
+
     with open(artifact_dir / "meta.json", "w") as f:
         json.dump({
             "version": version,
@@ -220,6 +233,8 @@ def train_model(
             "feature_importance": importance,
             "training_ranges": training_ranges,
             "steel_class": steel_class,
+            "data_source": data_source,
+            "data_source_doi": data_source_doi,
             "trained_at": datetime.now().isoformat(),
         }, f, indent=2, ensure_ascii=False)
 

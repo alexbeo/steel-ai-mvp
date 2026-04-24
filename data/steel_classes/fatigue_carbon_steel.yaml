@@ -1,0 +1,88 @@
+id: fatigue_carbon_steel
+name: "Carbon & Low-Alloy Fatigue (Agrawal NIMS 2014)"
+standard: "NIMS MatNavi / Agrawal IMMI 3:8 (2014)"
+target_properties:
+  - id: fatigue_strength_mpa
+    label: "Предел усталости, МПа"
+    range: [200, 1200]
+feature_set:
+  - c_pct
+  - si_pct
+  - mn_pct
+  - p_pct
+  - s_pct
+  - ni_pct
+  - cr_pct
+  - cu_pct
+  - mo_pct
+  - normalizing_temp_c
+  - through_hardening_temp_c
+  - through_hardening_time_min
+  - through_hardening_cooling_rate_c_per_s
+  - carburizing_temp_c
+  - carburizing_time_min
+  - diffusion_temp_c
+  - diffusion_time_min
+  - quenching_media_temp_c
+  - tempering_temp_c
+  - tempering_time_min
+  - tempering_cooling_rate_c_per_s
+  - reduction_ratio
+  - inclusion_area_defect_a
+  - inclusion_area_defect_b
+  - inclusion_area_defect_c
+physical_bounds:
+  c_pct: [0.17, 0.63]
+  si_pct: [0.16, 2.05]
+  mn_pct: [0.37, 1.60]
+  p_pct: [0.002, 0.031]
+  s_pct: [0.003, 0.030]
+  ni_pct: [0.01, 2.78]
+  cr_pct: [0.01, 1.17]
+  cu_pct: [0.01, 0.26]
+  mo_pct: [0.0, 0.24]
+  normalizing_temp_c: [825.0, 930.0]
+  through_hardening_temp_c: [30.0, 865.0]
+  through_hardening_time_min: [0.0, 30.0]
+  through_hardening_cooling_rate_c_per_s: [0.0, 24.0]
+  carburizing_temp_c: [30.0, 930.0]
+  carburizing_time_min: [0.0, 540.0]
+  diffusion_temp_c: [30.0, 903.3]
+  diffusion_time_min: [0.0, 70.2]
+  quenching_media_temp_c: [30.0, 140.0]
+  tempering_temp_c: [30.0, 680.0]
+  tempering_time_min: [0.0, 120.0]
+  tempering_cooling_rate_c_per_s: [0.0, 24.0]
+  reduction_ratio: [240.0, 5530.0]
+  inclusion_area_defect_a: [0.0, 0.13]
+  inclusion_area_defect_b: [0.0, 0.05]
+  inclusion_area_defect_c: [0.0, 0.058]
+expected_top_features:
+  - c_pct
+  - tempering_temp_c
+  - through_hardening_temp_c
+  - cr_pct
+  - mn_pct
+  - ni_pct
+  - carburizing_temp_c
+  - reduction_ratio
+process_params:
+  - normalizing_temp_c
+  - through_hardening_temp_c
+  - through_hardening_time_min
+  - through_hardening_cooling_rate_c_per_s
+  - carburizing_temp_c
+  - carburizing_time_min
+  - diffusion_temp_c
+  - diffusion_time_min
+  - quenching_media_temp_c
+  - tempering_temp_c
+  - tempering_time_min
+  - tempering_cooling_rate_c_per_s
+  - reduction_ratio
+synthetic_generator_name: fatigue_carbon_steel_real
+cost_seed_path: data/prices/seed_2026-04-23.yaml
+feature_engineering: passthrough
+target_o_activity_ppm: 15.0
+data_source: "Agrawal et al. 2014 — 437 real NIMS MatNavi fatigue records"
+data_source_doi: "10.1186/2193-9772-3-8"

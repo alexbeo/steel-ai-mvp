@@ -17,7 +17,7 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STEEL_CLASSES_DIR = PROJECT_ROOT / "data" / "steel_classes"
-AVAILABLE_CLASS_IDS = ["pipe_hsla", "en10083_qt"]
+AVAILABLE_CLASS_IDS = ["pipe_hsla", "en10083_qt", "fatigue_carbon_steel"]
 
 
 @dataclass
@@ -41,6 +41,8 @@ class SteelClassProfile:
     cost_seed_path: str
     feature_engineering: str
     target_o_activity_ppm: float | None = None
+    data_source: str | None = None
+    data_source_doi: str | None = None
 
     def target_ids(self) -> list[str]:
         return [t.id for t in self.target_properties]
@@ -67,6 +69,8 @@ def load_steel_class(class_id: str) -> SteelClassProfile:
         cost_seed_path=data.get("cost_seed_path", ""),
         feature_engineering=data.get("feature_engineering", "passthrough"),
         target_o_activity_ppm=data.get("target_o_activity_ppm"),
+        data_source=data.get("data_source"),
+        data_source_doi=data.get("data_source_doi"),
     )
     _PROFILE_CACHE[class_id] = profile
     return profile
@@ -77,14 +81,20 @@ def available_steel_classes() -> list[SteelClassProfile]:
 
 
 def get_synthetic_generator(generator_name: str) -> Callable:
-    """Lazy import to avoid circular deps with data_curator."""
+    """Lazy import to avoid circular deps with data_curator.
+
+    Returns a zero-arg callable yielding a DataFrame. Name is historical —
+    `fatigue_carbon_steel_real` returns REAL Agrawal NIMS data, not synthetic.
+    """
     from app.backend.data_curator import (
         generate_synthetic_en10083_qt_dataset,
         generate_synthetic_hsla_dataset,
+        load_real_agrawal_fatigue_dataset,
     )
     return {
         "pipe_hsla": generate_synthetic_hsla_dataset,
         "en10083_qt": generate_synthetic_en10083_qt_dataset,
+        "fatigue_carbon_steel_real": load_real_agrawal_fatigue_dataset,
     }[generator_name]
 
 
