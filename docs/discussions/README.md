@@ -21,3 +21,4 @@
 | 2026-04-25 | [Project purpose reframe — MVP, не sales-tool](2026-04-25_project_purpose_reframe.md) | decided |
 | 2026-04-25 | [Target users — R&D + Materials scientist](2026-04-25_target_users.md) | decided |
 | 2026-04-25 | [AI integration roadmap — 5 направлений](2026-04-25_ai_integration_roadmap.md) | in-progress |
+| 2026-04-25 | [A2 verification на Agrawal модели — PASSED](2026-04-25_a2_verification_agrawal.md) | decided |
