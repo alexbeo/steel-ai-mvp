@@ -8,6 +8,7 @@ optuna>=3.3
 
 # Materials / physics
 pymoo>=0.6.1
+gplearn>=0.4  # symbolic regression (B1 from AI integration roadmap)
 
 # Storage
 pyarrow>=13.0  # parquet
