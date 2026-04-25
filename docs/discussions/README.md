@@ -29,3 +29,4 @@
 | 2026-04-25 | [B1 symbolic regression — Pareto frontier на Agrawal, R²=0.825 best](2026-04-25_b1_symbolic_regression_first_run.md) | decided |
 | 2026-04-25 | [Property+Cost optimization — EC.1 done на Agrawal: −€28/т при +181 МПа](2026-04-25_property_cost_optimization_idea.md) | in-progress |
 | 2026-04-25 | [Recipe Designer + PhD Critic — live cycle, 1 ACCEPT (готовый кандидат)](2026-04-25_recipe_designer_critic_live.md) | decided |
+| 2026-04-25 | [B2 active learning — top-5 экспериментов на Agrawal через cost-weighted EI](2026-04-25_b2_active_learning_first_run.md) | decided |
