@@ -150,12 +150,63 @@ st.sidebar.metric(
 ])
 
 
+def _tab_intro(
+    purpose: str, audience: list[str], steps: list[str],
+    expanded: bool = False,
+) -> None:
+    """Унифицированная справка по вкладке: назначение, кому подходит,
+    порядок работы. Раскрытие по требованию (collapsed по умолчанию)."""
+    with st.expander("ℹ️ Назначение, аудитория, порядок работы", expanded=expanded):
+        st.markdown(f"**Назначение.** {purpose}")
+        st.markdown("**Кому подходит:**")
+        for a in audience:
+            st.markdown(f"- {a}")
+        st.markdown("**Порядок работы:**")
+        for i, s in enumerate(steps, 1):
+            st.markdown(f"{i}. {s}")
+
+
 # =========================================================================
 # Tab 1: Inverse design
 # =========================================================================
 
 with tab_design:
     st.header("Поиск состава под целевые свойства")
+    _tab_intro(
+        purpose=(
+            "Подобрать оптимальный химический состав стали под заданные "
+            "целевые свойства (предел текучести, прочность, удлинение, "
+            "ударная вязкость) при минимизации стоимости ферросплавов. "
+            "Используется NSGA-II — multi-objective evolutionary "
+            "optimization над composition+process пространством, "
+            "с ML-моделью как property-predictor и ferroalloy-cost-model "
+            "как €-predictor."
+        ),
+        audience=[
+            "**R&D-инженер по разработке марок стали** "
+            "(composition development engineer)",
+            "**Технолог-металлург сталеплавильного производства**, "
+            "формирующий рецептуру под новый заказ",
+            "**Process metallurgist** в industrial R&D — оптимизация "
+            "имеющихся марок под новые ценовые условия ferroalloy "
+            "рынка",
+            "На традиционном меткомбинате — сотрудник **ЦЗЛ "
+            "(центральной заводской лаборатории)** или **отдела "
+            "технологии стали**",
+        ],
+        steps=[
+            "Убедиться что в sidebar выбрана активная модель нужного "
+            "класса стали",
+            "Установить **целевой диапазон** свойств "
+            "(например, σт = 485-580 МПа для класса X70)",
+            "Выбрать режим стоимости: `full` (alloy + scrap base) или "
+            "`alloy_only` (только ферросплавы)",
+            "Запустить дизайн — NSGA-II пробежит ~60 поколений с "
+            "population 80, выдаст Pareto-фронт ~10-30 кандидатов",
+            "Каждый кандидат показывает прогноз свойств с CI, €/т, "
+            "расход ферросплавов по материалам",
+        ],
+    )
     st.caption("Задайте ТЗ — получите Pareto-оптимальные кандидаты с прогнозом и валидацией")
 
     # Inverse design is HSLA-only in this iteration
@@ -447,6 +498,38 @@ with tab_design:
 with tab_train:
     st.header("Обучение модели")
     st.caption("Обучает XGBoost с quantile regression для uncertainty estimation")
+    _tab_intro(
+        purpose=(
+            "Обучить XGBoost-модель composition→property для выбранного "
+            "класса стали. Применяется time-based split + GroupKFold "
+            "(защита от data leakage), quantile regression для 90% CI, "
+            "GMM OOD-детектор по composition, split-conformal калибровка "
+            "интервалов. Optuna автоматически подбирает гиперпараметры."
+        ),
+        audience=[
+            "**Data scientist / ML-engineer** в R&D отделе или digital "
+            "advanced analytics group меткомбината",
+            "**Materials informatics specialist** в академической "
+            "research group",
+            "**Аспирант / постдок** в materials science — обучение под "
+            "научную задачу",
+            "На больших комбинатах (ArcelorMittal Global R&D, "
+            "voestalpine Forschung) — сотрудник digital metallurgy team",
+        ],
+        steps=[
+            "Выбрать **класс стали** из dropdown "
+            "(pipe_hsla / en10083_qt / fatigue_carbon_steel)",
+            "Выбрать **target property** — модель строится для одного "
+            "целевого свойства за раз",
+            "Установить **Optuna trials** (40 — стандартный режим; "
+            "80-100 для финальной production-модели; 10-20 для quick "
+            "experimentation)",
+            "Нажать «🤖 Обучить» — занимает 1-5 минут в зависимости "
+            "от trials и размера данных",
+            "После обучения модель появится в sidebar dropdown "
+            "и станет доступна для прогноза, дизайна, AI-вкладок",
+        ],
+    )
 
     from app.backend.steel_classes import (
         available_steel_classes,
@@ -591,6 +674,40 @@ with tab_train:
 with tab_predict:
     st.header("Прогноз для заданного состава")
     st.caption("Введите химию и режим — получите прогноз с uncertainty")
+    _tab_intro(
+        purpose=(
+            "Точечный прогноз механического свойства по введённой "
+            "композиции и параметрам процесса. Возвращает **point "
+            "estimate** + **90% доверительный интервал** "
+            "(conformal-corrected), а также **OOD-флаг** — сигнал "
+            "что введённая композиция вне обучающего распределения "
+            "и прогноз ненадёжен."
+        ),
+        audience=[
+            "**Технолог сталеплавильного цеха** — проверка expected "
+            "свойств перед запуском плавки",
+            "**Инженер ОТК / отдела технического контроля** — "
+            "входной контроль scrap по химии и расчёт ожидаемых "
+            "механических характеристик",
+            "**Старший металлург** дуговой / конвертерной печи / ladle",
+            "**Специалист производственной лаборатории** на участке "
+            "термообработки (расчёт отпускных режимов под целевую "
+            "твёрдость)",
+        ],
+        steps=[
+            "Убедиться что выбрана нужная **активная модель** в sidebar "
+            "(класс стали должен соответствовать вашей задаче)",
+            "Ввести **композицию** (wt%) — поля подстраиваются под "
+            "feature_set активной модели",
+            "Ввести **параметры процесса** (температуры, времена, "
+            "скорости охлаждения)",
+            "Получить **прогноз свойства** + 90% CI + ⚠️ OOD-флаг "
+            "если состав вне training distribution",
+            "При OOD — переключиться на вкладку «🔬 Анализ "
+            "аномалий» (через CLI скрипт) или скорректировать "
+            "входные параметры",
+        ],
+    )
 
     if not selected_model:
         st.warning("Сначала обучите модель")
@@ -672,6 +789,39 @@ with tab_deox:
     st.caption(
         "Physics-based advisory на базе 3 термодинамических моделей. "
         "Без ML. Расчёт на каждую плавку."
+    )
+    _tab_intro(
+        purpose=(
+            "Расчёт массы алюминия для раскисления стали в ковше "
+            "(ladle furnace). Forward — сколько Al подать чтобы снизить "
+            "активный кислород до target. Inverse — оценка эффективной "
+            "чистоты Al-проволоки по факту замера post-melt. Compare — "
+            "три термодинамические модели (Fruehan 1985, Sigworth-Elliott "
+            "1974, Hayashi-Yamamoto 2013) рядом для cross-validation."
+        ),
+        audience=[
+            "**Сталевар-разливщик / мастер ladle furnace** — "
+            "оперативный расчёт Al per heat",
+            "**Технолог цеха внепечной обработки** "
+            "(secondary metallurgy)",
+            "**Инженер по разливке стали** на МНЛЗ",
+            "Operator поста раскисления + контроля включений на "
+            "традиционном меткомбинате; в малых заводах — "
+            "сменный мастер сталеплавильного цеха",
+        ],
+        steps=[
+            "**Forward** (перед раскислением): ввести измеренную "
+            "O_a (ppm), target O_a, температуру стали (°C), массу "
+            "плавки (тонн) → получить Al kg/heat по 3 моделям",
+            "**Inverse** (после плавки): ввести фактический Al, факт "
+            "O_final → получить эффективную чистоту Al-проволоки "
+            "(audit-метрика для поставщика)",
+            "**Compare**: все 3 модели parallel — если расходятся, "
+            "physics в этой зоне сама по себе неточная; решение "
+            "принимать по запасу",
+            "При желании сохранить расчёт в **Decision Log** для "
+            "audit trail",
+        ],
     )
 
     from app.backend.deoxidation import (
@@ -901,6 +1051,43 @@ with tab_hyp:
     st.caption(
         "LLM просматривает обученную модель и предлагает testable гипотезы "
         "с оценкой экономического эффекта vs классическая практика."
+    )
+    _tab_intro(
+        purpose=(
+            "Sonnet смотрит на обученную модель и формулирует 3-5 "
+            "testable research hypotheses — predictions, которые можно "
+            "проверить экспериментально и которые имеют **экономический "
+            "эффект vs классическая практика** (trial-and-error / "
+            "handbook recipe / Thermo-Calc / substitution baseline). "
+            "Второй Sonnet — PhD-критик — делает adversarial peer review "
+            "каждой гипотезы и выдаёт ACCEPT / REVISE / REJECT с "
+            "построчной проверкой evidence."
+        ),
+        audience=[
+            "**Materials scientist в академической research group** — "
+            "гипотезы для следующей публикации в Acta Materialia, MSE A, "
+            "Metall Mater Trans A",
+            "**R&D research engineer** — formulation testable claims "
+            "для experimental campaign на pilot line",
+            "**Scientific PI / руководитель R&D-группы** — выявление "
+            "новых исследовательских направлений из накопленных данных",
+            "**Postgraduate / postdoc в materials informatics** — "
+            "обоснование experimental hypothesis defense'а",
+        ],
+        steps=[
+            "Убедиться что выбрана модель и **ANTHROPIC_API_KEY** "
+            "задан в `.env`",
+            "Нажать «🔮 Сгенерировать гипотезы и провести рецензию» "
+            "(полный цикл ~3 минуты, ~$0.14)",
+            "Получить 5 карточек: каждая с **statement / обоснование "
+            "/ proposed_experiment / expected_outcome / экономический "
+            "эффект**",
+            "Под каждой карточкой — **PhD-рецензия**: вердикт + "
+            "fact-check evidence + сильные / слабые стороны + правки",
+            "ACCEPT-гипотезы — кандидаты на experimental verification; "
+            "REVISE — посмотреть suggested_revision и переформулировать; "
+            "REJECT — пропустить",
+        ],
     )
 
     if not selected_model:
@@ -1162,6 +1349,47 @@ with tab_recipe:
         "Sonnet проектирует рецепт с двойной evidence (artifact + mechanism), "
         "ML+cost проверяет численно, второй Sonnet делает PhD peer-review с "
         "построчной проверкой evidence."
+    )
+    _tab_intro(
+        purpose=(
+            "AI-driven подбор production-рецептa с двойной "
+            "доказательной базой. Sonnet-designer формирует 3-4 "
+            "альтернативные композиции; каждое изменение легирующего "
+            "элемента обосновано **одновременно** artifact-данными "
+            "(feature_importance, training_ranges) **и** classical "
+            "metallurgical mechanism (Hall-Petch, Hollomon-Jaffe, "
+            "Grossmann's DI, Pickering, Andrews equations, CEV/Pcm). "
+            "Затем XGBoost+cost_model численно проверяют каждый "
+            "рецепт. Sonnet-критик уровня journal reviewer #2 делает "
+            "adversarial review с построчным fact-check evidence."
+        ),
+        audience=[
+            "**Senior R&D engineer по разработке составов** "
+            "(composition design lead)",
+            "**Materials scientist в industrial R&D-лаборатории** — "
+            "при работе над новыми grade'ами стали или оптимизации "
+            "существующих под обновлённые ferroalloy цены",
+            "**Process metallurgist готовящий новую recipe для "
+            "pilot heat** — рецепт с full evidence + PhD review "
+            "выходит в опытное производство с минимальным риском",
+            "**Старший инженер ЦЗЛ** или **отдела технологии стали** "
+            "на традиционных меткомбинатах",
+        ],
+        steps=[
+            "Сформулировать **задачу проектирования** в текстовом поле "
+            "(default — снизить cost при сохранении σ свойства)",
+            "Запустить полный цикл (~3 минуты, ~$0.20-0.25)",
+            "Получить 3-4 рецепта с **verdict-бейджами** "
+            "(ACCEPT / REVISE / REJECT)",
+            "Для каждого рецепта изучить: **обоснование**, "
+            "**доказательную базу** (artifact + mechanism), **PhD "
+            "fact-check** каждой строки evidence (✓ VALID, "
+            "✗ INVALID, ? UNVERIFIABLE), **strengths / weaknesses**, "
+            "**предложение правки**",
+            "**ACCEPT-рецепты** — готовые кандидаты на pilot heat "
+            "с прозрачной evidence-картой; **REVISE** — посмотреть "
+            "suggested_revision и переподать; **REJECT** — отклонить",
+        ],
     )
 
     if not selected_model:
@@ -1572,6 +1800,43 @@ with tab_al:
         "ранжированы по Expected Improvement / cost — предпочитаются дешёвые "
         "эксперименты с высоким ожидаемым приростом свойства."
     )
+    _tab_intro(
+        purpose=(
+            "Sequential planning экспериментов. Latin Hypercube Sampling "
+            "случайно покрывает feasible space модели, для каждой точки "
+            "считается **Expected Improvement** (Jones et al. 1998) "
+            "относительно best-observed-training f*, делится на cost — "
+            "получается ranked queue \"какой следующий эксперимент даст "
+            "максимальный ожидаемый прирост свойства на каждый €\". "
+            "Чисто numerical, без LLM, дёшево (~150 мс)."
+        ),
+        audience=[
+            "**Planning lead в R&D** — формирование experimental queue "
+            "на месяц / квартал",
+            "**Materials scientist в академии** — выбор следующей "
+            "серии плавок при ограниченном бюджете",
+            "**Test laboratory engineer** — приоритизация expensive "
+            "testing в production R&D",
+            "**Главный инженер R&D / руководитель опытного "
+            "производства** на меткомбинате — где каждая плавка "
+            "стоит €5-15k и нужно минимизировать число итераций",
+        ],
+        steps=[
+            "Настроить **n_samples** (2000 — стандарт; 5000 для "
+            "финального plan; 500 для quick-look)",
+            "Установить **top_k** — сколько лучших экспериментов "
+            "вернуть (3-10)",
+            "Нажать **«🔭 Найти top-K экспериментов»** — расчёт 1-3 "
+            "секунды",
+            "Каждая карточка: **EI/cost score**, **прогноз свойства "
+            "+ CI**, **Δσ vs base, Δcost vs base, OOD-флаг**, "
+            "композиция и process per кандидат",
+            "Использовать ranked queue для planning последовательности "
+            "experimental campaign; **OOD-флаг ⚠️** означает что "
+            "композиция вне training distribution — модель там "
+            "неуверенна, эксперимент нужен особенно",
+        ],
+    )
 
     if not selected_model:
         st.warning("Сначала выберите активную модель в sidebar.")
@@ -1815,7 +2080,41 @@ with tab_al:
 with tab_history:
     st.header("История решений проекта")
     st.caption("Structured memory — все архитектурные решения с контекстом и reasoning")
-    
+    _tab_intro(
+        purpose=(
+            "Audit trail всех решений принятых системой за всё время "
+            "работы. SQLite база `decision_log/decisions.db`. Каждая "
+            "запись: фаза, что решено, reasoning, контекст (полный "
+            "snapshot входных и выходных данных), теги, автор. "
+            "Это **persistent memory проекта** — компенсирует "
+            "отсутствие memory у LLM-сессий и обеспечивает "
+            "auditability для regulated industries."
+        ),
+        audience=[
+            "**Project manager / R&D lead** — отслеживание "
+            "истории решений по заказу или продукту",
+            "**QA / compliance officer** — auditability требование "
+            "для aerospace / nuclear / автомобильной "
+            "сертификации (ISO 9001, IATF 16949, AS9100)",
+            "**Любой пользователь** для воспроизведения предыдущих "
+            "циклов (replay какой-то AI-генерации, recipe-цикла, "
+            "deoxidation расчёта)",
+            "**Senior research engineer** — cross-project review "
+            "(посмотреть какие решения принимались и почему)",
+        ],
+        steps=[
+            "Фильтровать по **фазе** (data_acquisition / preprocessing "
+            "/ training / inverse_design / validation / reporting / "
+            "meta) или показать все",
+            "Установить **лимит** (по умолчанию 20)",
+            "**Развернуть expander** каждой записи — там полный "
+            "context (JSON) + reasoning + alternatives + теги + "
+            "outcome",
+            "Для batch анализа использовать SQL-доступ напрямую: "
+            "`sqlite3 decision_log/decisions.db`",
+        ],
+    )
+
     from decision_log.logger import query_decisions, summarize_project_history
     
     c1, c2 = st.columns(2)
