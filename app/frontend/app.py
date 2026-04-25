@@ -137,12 +137,13 @@ st.sidebar.metric(
 # Main tabs
 # =========================================================================
 
-tab_design, tab_train, tab_predict, tab_deox, tab_hyp, tab_history = st.tabs([
+tab_design, tab_train, tab_predict, tab_deox, tab_hyp, tab_recipe, tab_history = st.tabs([
     "🎯 Дизайн сплава",
     "🤖 Обучение модели",
     "📊 Прогноз",
     "🔥 Раскисление",
     "💡 Гипотезы",
+    "🧪 Подбор рецепта",
     "📚 История",
 ])
 
@@ -1147,6 +1148,415 @@ with tab_hyp:
                         f"id={h.get('id', '?')} · теги: "
                         f"{', '.join(h.get('tags', []))}"
                     )
+
+
+# =========================================================================
+# Tab 6: Recipe Designer + PhD Critic — composition cycle
+# =========================================================================
+
+with tab_recipe:
+    st.header("🧪 Подбор рецепта — Sonnet PhD pair")
+    st.caption(
+        "Sonnet проектирует рецепт с двойной evidence (artifact + mechanism), "
+        "ML+cost проверяет численно, второй Sonnet делает PhD peer-review с "
+        "построчной проверкой evidence."
+    )
+
+    if not selected_model:
+        st.warning("Сначала выберите активную модель в sidebar.")
+    elif not _llm_ok:
+        st.warning("ANTHROPIC_API_KEY не задан — recipe pair недоступен.")
+    elif _class_id != "fatigue_carbon_steel":
+        st.warning(
+            "Recipe pair сейчас работает только на классе "
+            "`fatigue_carbon_steel` (Agrawal NIMS). Выберите такую модель "
+            "в sidebar."
+        )
+    else:
+        from decision_log.logger import query_decisions
+
+        st.markdown(f"**Активная модель:** `{selected_model}`")
+
+        existing_runs = [
+            d for d in query_decisions(phase="inverse_design", limit=200)
+            if "recipe_cycle" in (d.get("tags") or [])
+            and d.get("context", {}).get("model_version") == selected_model
+        ]
+        st.caption(
+            f"Прошлых циклов на этой модели: **{len(existing_runs)}**"
+            + (
+                f" · последний {existing_runs[0]['timestamp'][:16]}"
+                if existing_runs else ""
+            )
+        )
+
+        default_task = (
+            "Снизить ferroalloy cost vs baseline при сохранении или "
+            "улучшении fatigue strength. Целевой компромисс: каждый "
+            "−€10/т имеет ценность если |Δσf| ≤ 30 МПа."
+        )
+        task_text = st.text_area(
+            "Задача проектирования", value=default_task, height=85,
+        )
+
+        run_btn = st.button(
+            "🧪 Запустить полный цикл (designer + ML + critic)",
+            type="primary",
+            help="~3 минуты, ~$0.20-0.25 за полный цикл.",
+        )
+
+        if run_btn:
+            from dataclasses import asdict as _asdict
+            import json as _json
+            import numpy as _np
+            import pandas as _pd
+
+            from app.backend.cost_model import compute_cost, seed_snapshot
+            from app.backend.data_curator import (
+                load_real_agrawal_fatigue_dataset,
+            )
+            from app.backend.model_trainer import (
+                load_model as _load_m, predict_with_uncertainty,
+            )
+            from app.backend.recipe_designer import make_recipe_designer
+            from app.backend.recipe_critic import make_recipe_critic
+            from decision_log.logger import log_decision
+
+            DESIGN_COMPOSITION = [
+                "si_pct", "mn_pct", "ni_pct", "cr_pct", "cu_pct", "mo_pct",
+            ]
+            DESIGN_PROCESS = [
+                "normalizing_temp_c",
+                "carburizing_temp_c",
+                "carburizing_time_min",
+                "tempering_temp_c",
+                "tempering_time_min",
+                "through_hardening_cooling_rate_c_per_s",
+            ]
+
+            designer = make_recipe_designer()
+            critic = make_recipe_critic()
+            if designer is None or critic is None:
+                st.error("Designer или critic недоступны")
+            else:
+                progress = st.progress(0, text="Загрузка модели и baseline…")
+
+                bundle = _load_m(selected_model)
+                meta = bundle["meta"]
+                target = meta["target"]
+
+                df_raw = load_real_agrawal_fatigue_dataset()
+                if "sub_class" in df_raw.columns:
+                    sub = df_raw[df_raw["sub_class"] == "carbon_low_alloy"]
+                    if len(sub) < 50:
+                        sub = df_raw
+                else:
+                    sub = df_raw
+                baseline = sub.select_dtypes(include=[_np.number]).median()
+
+                snapshot = seed_snapshot()
+                feature_list = meta["feature_list"]
+                X_base = _pd.DataFrame(
+                    [[float(baseline[f]) for f in feature_list]],
+                    columns=feature_list,
+                )
+                base_pred = predict_with_uncertainty(bundle, X_base).iloc[0]
+                baseline_predicted = float(base_pred["prediction"])
+                baseline_comp = {
+                    k: float(v) for k, v in baseline.items()
+                    if k.endswith("_pct")
+                }
+                baseline_cost = compute_cost(
+                    baseline_comp, snapshot, mode="full",
+                ).total_per_ton
+
+                avail_comp = [c for c in DESIGN_COMPOSITION if c in feature_list]
+                avail_proc = [p for p in DESIGN_PROCESS if p in feature_list]
+                baseline_recipe = {
+                    **{k: float(baseline[k]) for k in avail_comp},
+                    **{k: float(baseline[k]) for k in avail_proc},
+                }
+
+                designer_ctx = {
+                    "task": task_text,
+                    "steel_class": meta.get("steel_class"),
+                    "target": target,
+                    "data_source": meta.get("data_source"),
+                    "model_version": selected_model,
+                    "r2_test": meta["metrics"]["r2_test"],
+                    "mae_test": meta["metrics"]["mae_test"],
+                    "coverage_90_ci": meta["metrics"]["coverage_90_ci"],
+                    "conformal_correction_mpa": meta.get(
+                        "conformal_correction_mpa", 0,
+                    ),
+                    "feature_importance": meta["feature_importance"],
+                    "training_ranges": meta["training_ranges"],
+                    "target_distribution": {
+                        "min": float(df_raw[target].min()),
+                        "max": float(df_raw[target].max()),
+                        "mean": float(df_raw[target].mean()),
+                        "std": float(df_raw[target].std()),
+                        "n": int(len(df_raw)),
+                    },
+                    "baseline_recipe": baseline_recipe,
+                    "baseline_predicted_property": baseline_predicted,
+                    "baseline_cost_per_ton": float(baseline_cost),
+                    "available_composition": avail_comp,
+                    "available_process": avail_proc,
+                }
+
+                progress.progress(15, text="Designer формулирует рецепты (~80 с)…")
+                recipes = designer.design(designer_ctx)
+                if not recipes:
+                    progress.empty()
+                    st.error("Designer вернул 0 рецептов")
+                else:
+                    progress.progress(50, text="ML+cost проверяет рецепты…")
+                    recipes_with_v = []
+                    for r in recipes:
+                        row = baseline.copy()
+                        for k, v in r.composition.items():
+                            if k in row.index: row[k] = float(v)
+                        for k, v in r.process_params.items():
+                            if k in row.index: row[k] = float(v)
+                        X_r = _pd.DataFrame(
+                            [[float(row[f]) for f in feature_list]],
+                            columns=feature_list,
+                        )
+                        pp = predict_with_uncertainty(bundle, X_r).iloc[0]
+                        comp = {
+                            k: float(v) for k, v in row.items()
+                            if k.endswith("_pct")
+                        }
+                        try:
+                            cb = compute_cost(comp, snapshot, mode="full")
+                            cost_pt = cb.total_per_ton
+                            ferro = [
+                                {
+                                    "material": c.material_id,
+                                    "kg_per_ton": round(c.mass_kg_per_ton_steel, 2),
+                                    "eur_per_ton": round(c.contribution_per_ton, 2),
+                                }
+                                for c in cb.contributions
+                                if c.material_id != "scrap"
+                            ]
+                        except Exception:
+                            cost_pt = None; ferro = []
+                        ml = {
+                            "predicted_property": float(pp["prediction"]),
+                            "lower_90": float(pp["lower_90"]),
+                            "upper_90": float(pp["upper_90"]),
+                            "ood_flag": bool(pp["ood_flag"]),
+                            "cost_per_ton": cost_pt,
+                            "delta_property": float(pp["prediction"]) - baseline_predicted,
+                            "delta_cost": (
+                                cost_pt - baseline_cost
+                                if cost_pt is not None else None
+                            ),
+                            "ferroalloy_breakdown": ferro,
+                        }
+                        d = _asdict(r); d["ml_verification"] = ml
+                        recipes_with_v.append(d)
+
+                    progress.progress(70, text="Critic делает PhD-рецензию (~100 с)…")
+                    verdicts = critic.review(designer_ctx, recipes_with_v)
+                    progress.progress(95, text="Сохраняю результаты…")
+
+                    counts = {"ACCEPT": 0, "REVISE": 0, "REJECT": 0}
+                    for v in verdicts:
+                        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+
+                    log_decision(
+                        phase="inverse_design",
+                        decision=(
+                            f"Recipe cycle: {len(recipes)} рецептов, "
+                            f"A={counts['ACCEPT']} R={counts['REVISE']} "
+                            f"X={counts['REJECT']}"
+                        ),
+                        reasoning=(
+                            f"model={selected_model}, "
+                            f"baseline σf={baseline_predicted:.0f} МПа, "
+                            f"cost={baseline_cost:.2f} €/т"
+                        ),
+                        context={
+                            "model_version": selected_model,
+                            "baseline": {
+                                "recipe": baseline_recipe,
+                                "predicted_property": baseline_predicted,
+                                "cost_per_ton": float(baseline_cost),
+                            },
+                            "recipes": recipes_with_v,
+                            "reviews": [_asdict(v) for v in verdicts],
+                            "verdict_counts": counts,
+                        },
+                        author="ui",
+                        tags=["recipe_cycle", "sonnet-4-6"],
+                    )
+                    progress.progress(100, text="Готово")
+                    st.success(
+                        f"Получено {len(recipes)} рецептов, "
+                        f"вердикты A={counts['ACCEPT']} "
+                        f"R={counts['REVISE']} X={counts['REJECT']}"
+                    )
+                    st.rerun()
+
+        if not existing_runs:
+            st.info(
+                "Циклов ещё нет — нажмите кнопку выше чтобы запустить "
+                "первый подбор рецепта."
+            )
+        else:
+            run = existing_runs[0]
+            ctx_d = run.get("context", {})
+            base = ctx_d.get("baseline", {})
+            cycle_recipes = ctx_d.get("recipes", [])
+            cycle_reviews = {
+                rv["recipe_id"]: rv for rv in ctx_d.get("reviews", [])
+            }
+            counts = ctx_d.get("verdict_counts", {})
+
+            cb1, cb2, cb3, cb4 = st.columns(4)
+            cb1.metric(
+                "Baseline σf",
+                f"{base.get('predicted_property', 0):.0f} МПа",
+            )
+            cb2.metric(
+                "Baseline cost",
+                f"{base.get('cost_per_ton', 0):.2f} €/т",
+            )
+            cb3.metric("Рецептов", len(cycle_recipes))
+            cb4.metric(
+                "ACCEPT / REVISE / REJECT",
+                f"{counts.get('ACCEPT', 0)} / {counts.get('REVISE', 0)} / "
+                f"{counts.get('REJECT', 0)}",
+            )
+
+            verdict_color = {
+                "ACCEPT": "#3a9d23",
+                "REVISE": "#e0a800",
+                "REJECT": "#c0392b",
+            }
+            verdict_label = {
+                "ACCEPT": "ПРИНЯТО",
+                "REVISE": "ТРЕБУЕТ ПРАВОК",
+                "REJECT": "ОТКЛОНЕНО",
+            }
+            confidence_label = {
+                "HIGH": "высокая", "MEDIUM": "средняя", "LOW": "низкая",
+            }
+            ec_mark = {"VALID": "✓", "INVALID": "✗", "UNVERIFIABLE": "?"}
+
+            for i, r in enumerate(cycle_recipes, 1):
+                ml = r.get("ml_verification", {})
+                rv = cycle_reviews.get(r.get("id"))
+                with st.container(border=True):
+                    title_col, badge_col = st.columns([7, 3])
+                    title_col.markdown(
+                        f"### {i}. {r.get('name', '—')}"
+                    )
+                    novelty = r.get("novelty", "?")
+                    badge_col.markdown(
+                        f"<div style='text-align:right'>"
+                        f"<span style='background:#666;color:white;"
+                        f"padding:3px 8px;border-radius:4px;"
+                        f"font-size:0.85em'>новизна: {novelty}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    dp = ml.get("delta_property", 0) or 0
+                    dc = ml.get("delta_cost") or 0
+                    m1.metric(
+                        "Δσf, МПа",
+                        f"{dp:+.0f}",
+                        help=(
+                            f"Прогноз {ml.get('predicted_property', 0):.0f} "
+                            f"[{ml.get('lower_90', 0):.0f}, "
+                            f"{ml.get('upper_90', 0):.0f}]"
+                        ),
+                    )
+                    m2.metric("Δcost, €/т", f"{dc:+.2f}")
+                    m3.metric(
+                        "Прогноз σf, МПа",
+                        f"{ml.get('predicted_property', 0):.0f}",
+                        help=(
+                            f"90% CI [{ml.get('lower_90', 0):.0f}, "
+                            f"{ml.get('upper_90', 0):.0f}]"
+                        ),
+                    )
+                    ood = ml.get("ood_flag", False)
+                    m4.metric(
+                        "OOD",
+                        "⚠️ ДА" if ood else "✓ нет",
+                    )
+
+                    st.markdown(f"**Обоснование.** {r.get('rationale', '—')}")
+
+                    st.markdown("**Доказательная база.**")
+                    for ev in r.get("evidence", []):
+                        st.markdown(f"- {ev}")
+
+                    st.markdown(
+                        f"**Ожидание автора.** {r.get('expected_outcome', '—')}"
+                    )
+                    if r.get("risk_notes"):
+                        st.markdown(f"**Риски.** {r['risk_notes']}")
+
+                    if rv:
+                        st.divider()
+                        v_color = verdict_color.get(rv["verdict"], "#888")
+                        v_label = verdict_label.get(
+                            rv["verdict"], rv["verdict"],
+                        )
+                        c_label = confidence_label.get(
+                            rv["confidence"], rv["confidence"],
+                        )
+                        st.markdown(
+                            f"<div style='display:flex;align-items:center;"
+                            f"gap:12px;margin-bottom:6px'>"
+                            f"<span style='background:{v_color};color:white;"
+                            f"padding:4px 10px;border-radius:4px;"
+                            f"font-weight:600'>👨‍🔬 PhD-рецензия: "
+                            f"{v_label}</span>"
+                            f"<span style='color:#666;font-size:0.9em'>"
+                            f"уверенность {c_label}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(f"_{rv['summary']}_")
+
+                        if rv.get("evidence_check"):
+                            st.markdown("**Fact-check доказательной базы:**")
+                            for ec in rv["evidence_check"]:
+                                mark = ec_mark.get(ec["verdict"], "•")
+                                st.markdown(
+                                    f"- {mark} **{ec['claim']}** — {ec['note']}"
+                                )
+
+                        sl, sr = st.columns(2)
+                        if rv.get("strengths"):
+                            sl.markdown("**Сильные стороны**")
+                            for s in rv["strengths"]:
+                                sl.markdown(f"- {s}")
+                        if rv.get("weaknesses"):
+                            sr.markdown("**Слабые стороны**")
+                            for w in rv["weaknesses"]:
+                                sr.markdown(f"- {w}")
+
+                        if rv.get("suggested_revision"):
+                            st.info(
+                                f"**Предложение правки:** "
+                                f"{rv['suggested_revision']}"
+                            )
+
+                    if ml.get("ferroalloy_breakdown"):
+                        with st.expander("Расход ферросплавов в рецепте"):
+                            st.dataframe(
+                                ml["ferroalloy_breakdown"],
+                                use_container_width=True,
+                            )
+
+                    st.caption(f"id={r.get('id', '?')}")
 
 
 with tab_history:
