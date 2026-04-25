@@ -137,13 +137,15 @@ st.sidebar.metric(
 # Main tabs
 # =========================================================================
 
-tab_design, tab_train, tab_predict, tab_deox, tab_hyp, tab_recipe, tab_history = st.tabs([
+(tab_design, tab_train, tab_predict, tab_deox, tab_hyp, tab_recipe,
+ tab_al, tab_history) = st.tabs([
     "🎯 Дизайн сплава",
     "🤖 Обучение модели",
     "📊 Прогноз",
     "🔥 Раскисление",
     "💡 Гипотезы",
     "🧪 Подбор рецепта",
+    "🔭 Следующие эксперименты",
     "📚 История",
 ])
 
@@ -1557,6 +1559,257 @@ with tab_recipe:
                             )
 
                     st.caption(f"id={r.get('id', '?')}")
+
+
+# =========================================================================
+# Tab 7: Active Learning — следующие эксперименты по cost-weighted EI
+# =========================================================================
+
+with tab_al:
+    st.header("🔭 Следующие эксперименты — cost-weighted EI")
+    st.caption(
+        "Стохастический LHS-скан над feasible space модели. Top-K кандидатов "
+        "ранжированы по Expected Improvement / cost — предпочитаются дешёвые "
+        "эксперименты с высоким ожидаемым приростом свойства."
+    )
+
+    if not selected_model:
+        st.warning("Сначала выберите активную модель в sidebar.")
+    elif _class_id != "fatigue_carbon_steel":
+        st.warning(
+            "Active learner сейчас работает только на классе "
+            "`fatigue_carbon_steel` (Agrawal NIMS). Выберите такую модель."
+        )
+    else:
+        from decision_log.logger import query_decisions
+
+        st.markdown(f"**Активная модель:** `{selected_model}`")
+
+        existing_runs = [
+            d for d in query_decisions(phase="inverse_design", limit=200)
+            if "active_learning" in (d.get("tags") or [])
+            and d.get("context", {}).get("model_version") == selected_model
+        ]
+        st.caption(
+            f"Прошлых запусков: **{len(existing_runs)}**"
+            + (
+                f" · последний {existing_runs[0]['timestamp'][:16]}"
+                if existing_runs else ""
+            )
+        )
+
+        c1, c2, c3 = st.columns(3)
+        n_samples = c1.slider(
+            "LHS samples", 500, 5000, 2000, step=500,
+            help="Число точек для скана. Больше = точнее, но медленнее.",
+        )
+        top_k = c2.slider(
+            "Top-K", 3, 10, 5,
+            help="Сколько лучших кандидатов вернуть.",
+        )
+        seed = c3.number_input(
+            "Seed", value=42, step=1, format="%d",
+        )
+
+        run_btn = st.button(
+            "🔭 Найти top-K экспериментов",
+            type="primary",
+            help="LHS-скан + EI ранжировка. ~1-3 секунды, $0.",
+        )
+
+        if run_btn:
+            from dataclasses import asdict as _asdict
+            import numpy as _np
+            import pandas as _pd
+
+            from app.backend.active_learner import propose_next_experiments
+            from app.backend.cost_model import compute_cost, seed_snapshot
+            from app.backend.data_curator import load_real_agrawal_fatigue_dataset
+            from app.backend.model_trainer import (
+                load_model as _load_m, predict_with_uncertainty,
+            )
+            from decision_log.logger import log_decision
+
+            DESIGN_COMPOSITION = [
+                "si_pct", "mn_pct", "ni_pct", "cr_pct", "cu_pct", "mo_pct",
+            ]
+            DESIGN_PROCESS = [
+                "normalizing_temp_c",
+                "carburizing_temp_c",
+                "carburizing_time_min",
+                "tempering_temp_c",
+                "tempering_time_min",
+                "through_hardening_cooling_rate_c_per_s",
+            ]
+
+            with st.spinner("LHS-скан и predict_with_uncertainty…"):
+                bundle = _load_m(selected_model)
+                meta = bundle["meta"]
+                feature_list = meta["feature_list"]
+                target = meta["target"]
+                training_ranges = meta["training_ranges"]
+
+                df_raw = load_real_agrawal_fatigue_dataset()
+                if "sub_class" in df_raw.columns:
+                    sub = df_raw[df_raw["sub_class"] == "carbon_low_alloy"]
+                    if len(sub) < 50: sub = df_raw
+                else:
+                    sub = df_raw
+                baseline = sub.select_dtypes(include=[_np.number]).median()
+                f_star = float(df_raw[target].max())
+                snapshot = seed_snapshot()
+
+                X_base = _pd.DataFrame(
+                    [[float(baseline[f]) for f in feature_list]],
+                    columns=feature_list,
+                )
+                base_pred = float(
+                    predict_with_uncertainty(bundle, X_base).iloc[0]["prediction"]
+                )
+                base_comp = {
+                    k: float(v) for k, v in baseline.items()
+                    if k.endswith("_pct")
+                }
+                base_cost = compute_cost(
+                    base_comp, snapshot, mode="full",
+                ).total_per_ton
+
+                decision_vars = [
+                    v for v in DESIGN_COMPOSITION + DESIGN_PROCESS
+                    if v in feature_list and v in training_ranges
+                ]
+                bounds = {v: tuple(training_ranges[v]) for v in decision_vars}
+
+                def cost_fn(comp):
+                    return compute_cost(
+                        comp, snapshot, mode="full",
+                    ).total_per_ton
+
+                proposals = propose_next_experiments(
+                    model_bundle=bundle,
+                    baseline_row=baseline,
+                    feature_list=feature_list,
+                    decision_vars=decision_vars,
+                    bounds=bounds,
+                    f_star=f_star,
+                    cost_fn=cost_fn,
+                    baseline_cost=base_cost,
+                    baseline_property=base_pred,
+                    n_samples=int(n_samples),
+                    top_k=int(top_k),
+                    seed=int(seed),
+                )
+
+                log_decision(
+                    phase="inverse_design",
+                    decision=f"ActiveLearner: top-{top_k} via UI",
+                    reasoning=(
+                        f"model={selected_model}, n_samples={n_samples}, "
+                        f"f*={f_star:.0f}, top1 score="
+                        f"{proposals[0].acquisition_score:.4f}"
+                        if proposals else "no proposals"
+                    ),
+                    context={
+                        "model_version": selected_model,
+                        "baseline": {
+                            "predicted_property": base_pred,
+                            "cost_per_ton": float(base_cost),
+                        },
+                        "f_star": f_star,
+                        "n_samples": int(n_samples),
+                        "decision_vars": decision_vars,
+                        "proposals": [_asdict(p) for p in proposals],
+                    },
+                    author="ui",
+                    tags=["active_learning"],
+                )
+            st.success(f"Получено {len(proposals)} кандидатов")
+            st.rerun()
+
+        if not existing_runs:
+            st.info(
+                "Запусков ещё нет — нажмите кнопку выше чтобы получить "
+                "первый ranked queue экспериментов."
+            )
+        else:
+            run = existing_runs[0]
+            ctx_d = run.get("context", {})
+            base = ctx_d.get("baseline", {})
+            proposals = ctx_d.get("proposals", [])
+            f_star_v = ctx_d.get("f_star", 0)
+
+            cb1, cb2, cb3 = st.columns(3)
+            cb1.metric("Baseline σ", f"{base.get('predicted_property', 0):.0f} МПа")
+            cb2.metric("Baseline cost", f"{base.get('cost_per_ton', 0):.2f} €/т")
+            cb3.metric("f* (target)", f"{f_star_v:.0f} МПа")
+
+            for i, p in enumerate(proposals, 1):
+                with st.container(border=True):
+                    h1, h2 = st.columns([6, 4])
+                    h1.markdown(f"### #{i} EI/cost = {p['acquisition_score']:.4f}")
+                    ood = p.get("ood_flag", False)
+                    h2.markdown(
+                        f"<div style='text-align:right'>"
+                        f"<span style='background:{'#c0392b' if ood else '#3a9d23'};"
+                        f"color:white;padding:4px 10px;border-radius:4px;"
+                        f"font-size:0.85em'>"
+                        f"OOD: {'⚠️ да' if ood else '✓ нет'}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric(
+                        "Прогноз σ, МПа",
+                        f"{p['predicted_property']:.0f}",
+                        f"{p['delta_vs_baseline_property']:+.0f}",
+                        help=f"90% CI [{p['lower_90']:.0f}, {p['upper_90']:.0f}]",
+                    )
+                    m2.metric(
+                        "Cost, €/т",
+                        f"{p['cost_per_ton']:.2f}",
+                        f"{p['delta_vs_baseline_cost']:+.2f}",
+                        delta_color="inverse",
+                    )
+                    m3.metric("EI, МПа", f"{p['expected_improvement']:.2f}")
+                    m4.metric(
+                        "CI ширина",
+                        f"{p['uncertainty_width']:.0f}",
+                        help="upper_90 - lower_90",
+                    )
+
+                    cc1, cc2 = st.columns(2)
+                    cc1.markdown("**Composition vs baseline**")
+                    if p.get("composition"):
+                        cc1.dataframe(
+                            [
+                                {
+                                    "элемент": k,
+                                    "wt%": round(v, 4),
+                                    "Δ vs base": round(
+                                        v - float(
+                                            existing_runs[0].get("context", {})
+                                            .get("baseline", {})
+                                            .get("recipe", {})
+                                            .get(k, v)
+                                            if "recipe" in base else v
+                                        ), 4,
+                                    ) if "recipe" in base else None,
+                                }
+                                for k, v in p["composition"].items()
+                            ],
+                            use_container_width=True, hide_index=True,
+                        )
+                    cc2.markdown("**Process vs baseline**")
+                    if p.get("process_params"):
+                        cc2.dataframe(
+                            [
+                                {"параметр": k, "значение": round(v, 1)}
+                                for k, v in p["process_params"].items()
+                            ],
+                            use_container_width=True, hide_index=True,
+                        )
+
+                    st.caption(f"id={p.get('id', '?')}")
 
 
 with tab_history:
