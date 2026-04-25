@@ -913,40 +913,82 @@ with tab_predict:
 with tab_deox:
     st.header("🔥 Раскисление жидкой стали алюминием")
     st.caption(
-        "Physics-based advisory на базе 3 термодинамических моделей. "
-        "Без ML. Расчёт на каждую плавку."
+        "Physics-based advisory на базе 3 термодинамических моделей "
+        "**+ Sonnet PhD ladle metallurgist + adversarial критик**. "
+        "Расчёт на каждую плавку с full operator protocol."
     )
     _tab_intro(
         purpose=(
-            "Расчёт массы алюминия для раскисления стали в ковше "
-            "(ladle furnace). Forward — сколько Al подать чтобы снизить "
-            "активный кислород до target. Inverse — оценка эффективной "
-            "чистоты Al-проволоки по факту замера post-melt. Compare — "
-            "три термодинамические модели (Fruehan 1985, Sigworth-Elliott "
-            "1974, Hayashi-Yamamoto 2013) рядом для cross-validation."
+            "Двухслойный расчёт раскисления стали в ковше "
+            "(ladle furnace).\n\n"
+            "**Слой 1 — physics-based.** Forward — сколько Al подать "
+            "чтобы снизить активный кислород до target. Inverse — "
+            "оценка эффективной чистоты Al-проволоки по факту замера "
+            "post-melt. Compare — три термодинамические модели "
+            "(Fruehan 1985, Sigworth-Elliott 1974, Hayashi-Yamamoto "
+            "2013) рядом для cross-validation.\n\n"
+            "**Слой 2 — AI-советник + PhD-критик** (sub-tab «🤖 "
+            "AI-советник + критик»). Sonnet ранга senior ladle "
+            "metallurgist превращает 3 thermo числа в полный "
+            "operator protocol: Al kg + форма (wire/cube/powder) + "
+            "rate подачи + recovery factor + kinetic timing + "
+            "конкретные риски плавки + прогноз включений + "
+            "pre/post actions с цифрами + evidence (artifact + "
+            "mechanism citations Turkdogan, Cramb, Cicutti, Ghosh). "
+            "Второй Sonnet — PhD-критик уровня journal reviewer #2 — "
+            "делает adversarial peer review с **построчным fact-check "
+            "evidence** (VALID / INVALID / UNVERIFIABLE) и ловит "
+            "арифметические ошибки, неверные recovery factors, "
+            "missed risks, mechanism inversions."
         ),
         audience=[
             "**Сталевар-разливщик / мастер ladle furnace** — "
-            "оперативный расчёт Al per heat",
+            "оперативный расчёт Al per heat (sub-tabs Forward / "
+            "Inverse / Compare)",
             "**Технолог цеха внепечной обработки** "
-            "(secondary metallurgy)",
-            "**Инженер по разливке стали** на МНЛЗ",
-            "Operator поста раскисления + контроля включений на "
-            "традиционном меткомбинате; в малых заводах — "
-            "сменный мастер сталеплавильного цеха",
+            "(secondary metallurgy) — на сложных плавках включает "
+            "AI-советник для full protocol, особенно когда O_a "
+            "высокий, Mn/S пограничный, или slag FeO нестабилен",
+            "**Senior ladle metallurgist / руководитель secondary "
+            "metallurgy** на крупных комбинатах класса voestalpine "
+            "Linz, ArcelorMittal Florange, Salzgitter Flachstahl — "
+            "AI-советник заменяет 30-минутное совещание со старшим "
+            "коллегой 3-минутным protocol'ом с PhD-рецензией, "
+            "включая math fact-check",
+            "**Process engineer / R&D лаборатория секундарной "
+            "металлургии** — adversarial critic выявляет ошибки в "
+            "evidence на уровне журнальной рецензии (поймал "
+            "арифметическую несостыковку 35.4+30=44 в первом live "
+            "запуске)",
+            "**Инженер по разливке стали** на МНЛЗ — pre/post actions "
+            "включают рекомендации по SEN, Ar-продувке, защите от "
+            "re-oxidation",
         ],
         steps=[
-            "**Forward** (перед раскислением): ввести измеренную "
-            "O_a (ppm), target O_a, температуру стали (°C), массу "
-            "плавки (тонн) → получить Al kg/heat по 3 моделям",
-            "**Inverse** (после плавки): ввести фактический Al, факт "
-            "O_final → получить эффективную чистоту Al-проволоки "
-            "(audit-метрика для поставщика)",
-            "**Compare**: все 3 модели parallel — если расходятся, "
-            "physics в этой зоне сама по себе неточная; решение "
-            "принимать по запасу",
-            "При желании сохранить расчёт в **Decision Log** для "
-            "audit trail",
+            "**Sub-tab «Сколько Al нужно» (Forward)**: ввести "
+            "измеренную O_a (ppm), target O_a, T (°C), массу плавки "
+            "(тонн) → получить Al kg/heat по выбранной thermo-модели",
+            "**Sub-tab «Качество Al по факту» (Inverse)**: после "
+            "плавки ввести фактический Al и фактический O_final → "
+            "получить эффективную чистоту Al-проволоки (audit-метрика "
+            "для поставщика)",
+            "**Sub-tab «⚖️ Сравнить модели»**: 3 thermo-модели "
+            "parallel — если расходятся >20%, physics в этой зоне "
+            "сама по себе неточная, решение принимать по запасу",
+            "**Sub-tab «🤖 AI-советник + критик»** (требует "
+            "ANTHROPIC_API_KEY): ввести параметры плавки + опционально "
+            "композицию + slag FeO + grade target → запустить полный "
+            "цикл (~3 минуты, ~$0.20-0.25). Получить:\n"
+            "    - operator protocol с metrics (Al kg, форма, recovery, "
+            "kinetic timing) + risk flags + inclusion forecast + "
+            "pre/post actions + доказательная база;\n"
+            "    - PhD-вердикт критика (ACCEPT / REVISE / REJECT) с "
+            "построчным fact-check evidence, strengths, weaknesses, "
+            "suggested revision",
+            "При желании сохранить любой расчёт в **Decision Log** для "
+            "audit trail (тэги `deoxidation`, `deoxidation_advisory`, "
+            "`deoxidation_review`, `deoxidation_cycle`); audit-ready "
+            "для ISO 9001 / IATF 16949 / AS9100 compliance",
         ],
     )
 
