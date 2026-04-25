@@ -914,11 +914,11 @@ with tab_hyp:
 
         existing_runs = [
             d for d in query_decisions(phase="training", limit=200)
-            if d.get("author") == "hypothesis_generator"
+            if "hypothesis_cycle" in (d.get("tags") or [])
             and d.get("context", {}).get("model_version") == selected_model
         ]
         st.caption(
-            f"Прошлых запусков на этой модели: **{len(existing_runs)}**"
+            f"Прошлых циклов на этой модели: **{len(existing_runs)}**"
             + (
                 f" · последний {existing_runs[0]['timestamp'][:16]}"
                 if existing_runs else ""
@@ -926,56 +926,110 @@ with tab_hyp:
         )
 
         run_btn = st.button(
-            "🔮 Сгенерировать гипотезы",
+            "🔮 Сгенерировать гипотезы и провести рецензию",
             type="primary",
             help=(
-                "Один запуск ~100 секунд, ~$0.08. "
-                "Sonnet 4.6 анализирует артефакт модели."
+                "Полный цикл: генератор (~100 с, ~$0.08) → критик-PhD "
+                "(~45 с, ~$0.06). Итого ~2.5 минуты, ~$0.14."
             ),
         )
 
         if run_btn:
+            from dataclasses import asdict as _asdict
             from scripts.generate_hypotheses_for_model import build_context
             from app.backend.hypothesis_generator import make_hypothesis_generator
+            from app.backend.hypothesis_critic import make_hypothesis_critic
+            from decision_log.logger import log_decision
 
             gen = make_hypothesis_generator()
-            if gen is None:
-                st.error("HypothesisGenerator unavailable (anthropic SDK?)")
+            crit = make_hypothesis_critic()
+            if gen is None or crit is None:
+                st.error("Генератор или критик недоступны (нет ключа?)")
             else:
-                with st.spinner(
-                    "Sonnet анализирует артефакт модели… ~1-2 минуты"
-                ):
-                    ctx = build_context(selected_model)
-                    new_hypotheses = gen.generate(ctx)
+                progress = st.progress(0, text="Подготовка контекста модели…")
+                ctx = build_context(selected_model)
+                progress.progress(15, text="Генератор формулирует гипотезы (~100 с)…")
+                new_hypotheses = gen.generate(ctx)
                 if not new_hypotheses:
+                    progress.empty()
                     st.error(
                         "Получено 0 гипотез. Проверьте логи / model artifact."
                     )
                 else:
-                    st.success(f"Получено {len(new_hypotheses)} гипотез")
+                    progress.progress(60, text="Критик-PhD рецензирует (~45 с)…")
+                    hyp_dicts = [_asdict(h) for h in new_hypotheses]
+                    verdicts = crit.review(ctx, hyp_dicts)
+                    reviews_dicts = [_asdict(v) for v in verdicts]
+                    progress.progress(95, text="Сохраняю результаты…")
+
+                    verdict_counts = {"ACCEPT": 0, "REVISE": 0, "REJECT": 0}
+                    for v in verdicts:
+                        verdict_counts[v.verdict] = verdict_counts.get(v.verdict, 0) + 1
+
+                    log_decision(
+                        phase="training",
+                        decision=(
+                            f"Hypothesis cycle: {len(new_hypotheses)} гипотез, "
+                            f"вердикты A={verdict_counts['ACCEPT']} "
+                            f"R={verdict_counts['REVISE']} "
+                            f"X={verdict_counts['REJECT']}"
+                        ),
+                        reasoning=(
+                            f"Model={selected_model}, "
+                            f"hypotheses={len(new_hypotheses)}, "
+                            f"reviews={len(verdicts)}"
+                        ),
+                        context={
+                            "model_version": selected_model,
+                            "hypotheses": hyp_dicts,
+                            "reviews": reviews_dicts,
+                            "verdict_counts": verdict_counts,
+                        },
+                        author="ui",
+                        tags=["hypothesis_cycle", "sonnet-4-6"],
+                    )
+                    progress.progress(100, text="Готово")
+                    st.success(
+                        f"Получено {len(new_hypotheses)} гипотез, "
+                        f"{len(verdicts)} рецензий "
+                        f"(ACCEPT={verdict_counts['ACCEPT']} · "
+                        f"REVISE={verdict_counts['REVISE']} · "
+                        f"REJECT={verdict_counts['REJECT']})"
+                    )
                     st.rerun()
 
         display_runs = existing_runs[:1]
         if not display_runs:
             st.info(
-                "Запусков ещё нет — нажмите кнопку выше чтобы получить "
-                "первые гипотезы."
+                "Циклов ещё нет — нажмите кнопку выше чтобы запустить "
+                "первый разбор (генератор + рецензия)."
             )
         else:
             run = display_runs[0]
-            usage = run.get("context", {}).get("usage", {})
+            ctx_data = run.get("context", {})
+            cycle_hyps = ctx_data.get("hypotheses", [])
+            cycle_reviews = {
+                r["hypothesis_id"]: r
+                for r in ctx_data.get("reviews", [])
+            }
+            verdict_counts = ctx_data.get("verdict_counts", {})
+
             cols = st.columns(4)
-            cols[0].metric("Гипотез", len(run["context"].get("hypotheses", [])))
-            cols[1].metric("Время отклика, с", f"{usage.get('latency_s', 0):.1f}")
-            cols[2].metric(
-                "Токены на выходе",
-                int(usage.get("output_tokens", 0)),
+            cols[0].metric("Гипотез", len(cycle_hyps))
+            cols[1].metric(
+                "ACCEPT",
+                verdict_counts.get("ACCEPT", 0),
+                help="Принято критиком как есть",
             )
-            cache_hit = usage.get("cache_read", 0)
+            cols[2].metric(
+                "REVISE",
+                verdict_counts.get("REVISE", 0),
+                help="Требует правок",
+            )
             cols[3].metric(
-                "Кэш попадание",
-                "✓" if cache_hit > 100 else "—",
-                help=f"cache_read={cache_hit} токенов",
+                "REJECT",
+                verdict_counts.get("REJECT", 0),
+                help="Отклонено",
             )
 
             novelty_color = {
@@ -990,8 +1044,21 @@ with tab_hyp:
             cost_label = {
                 "LOW": "низкая", "MEDIUM": "средняя", "HIGH": "высокая",
             }
+            verdict_color = {
+                "ACCEPT": "#3a9d23",
+                "REVISE": "#e0a800",
+                "REJECT": "#c0392b",
+            }
+            verdict_label = {
+                "ACCEPT": "ПРИНЯТО",
+                "REVISE": "ТРЕБУЕТ ПРАВОК",
+                "REJECT": "ОТКЛОНЕНО",
+            }
+            confidence_label = {
+                "HIGH": "высокая", "MEDIUM": "средняя", "LOW": "низкая",
+            }
 
-            for i, h in enumerate(run["context"]["hypotheses"], start=1):
+            for i, h in enumerate(cycle_hyps, start=1):
                 novelty = h.get("novelty", "?")
                 cost = h.get("experiment_cost_estimate", "?")
                 color = novelty_color.get(novelty, "#888")
@@ -1038,6 +1105,43 @@ with tab_hyp:
                         f"- Метод проверки: "
                         f"{ei.get('measurement_method', '—')}"
                     )
+
+                    rv = cycle_reviews.get(h.get("id"))
+                    if rv:
+                        st.divider()
+                        v_color = verdict_color.get(rv["verdict"], "#888")
+                        v_label = verdict_label.get(rv["verdict"], rv["verdict"])
+                        c_label = confidence_label.get(
+                            rv["confidence"], rv["confidence"]
+                        )
+                        st.markdown(
+                            f"<div style='display:flex;align-items:center;"
+                            f"gap:12px;margin-bottom:6px'>"
+                            f"<span style='background:{v_color};color:white;"
+                            f"padding:4px 10px;border-radius:4px;"
+                            f"font-weight:600'>👨‍🔬 Рецензия PhD: "
+                            f"{v_label}</span>"
+                            f"<span style='color:#666;font-size:0.9em'>"
+                            f"уверенность {c_label}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(f"_{rv['summary']}_")
+
+                        sc_l, sc_r = st.columns(2)
+                        if rv.get("strengths"):
+                            sc_l.markdown("**Сильные стороны**")
+                            for s in rv["strengths"]:
+                                sc_l.markdown(f"- {s}")
+                        if rv.get("weaknesses"):
+                            sc_r.markdown("**Слабые стороны**")
+                            for w in rv["weaknesses"]:
+                                sc_r.markdown(f"- {w}")
+
+                        if rv.get("suggested_revision"):
+                            st.info(
+                                f"**Предложение правки:** "
+                                f"{rv['suggested_revision']}"
+                            )
 
                     st.caption(
                         f"id={h.get('id', '?')} · теги: "

@@ -179,24 +179,58 @@ def main():
         logger.error("HypothesisGenerator unavailable (no key / SDK missing).")
         sys.exit(1)
 
-    logger.info("Calling Claude (model: %s)...", gen.model)
+    logger.info("Calling Claude generator (model: %s)...", gen.model)
     hypotheses = gen.generate(ctx)
     logger.info("Got %d hypotheses", len(hypotheses))
 
+    reviews_by_id: dict[str, dict] = {}
+    if hypotheses:
+        from app.backend.hypothesis_critic import make_hypothesis_critic
+        crit = make_hypothesis_critic()
+        if crit is None:
+            logger.warning("HypothesisCritic unavailable — skipping peer review")
+        else:
+            from dataclasses import asdict as _asdict
+            logger.info("Calling Claude critic for adversarial review...")
+            verdicts = crit.review(
+                ctx,
+                [_asdict(h) for h in hypotheses],
+            )
+            logger.info("Got %d reviews", len(verdicts))
+            for v in verdicts:
+                reviews_by_id[v.hypothesis_id] = _asdict(v)
+
     print()
     print("=" * 70)
-    print(f"Hypotheses for {model_version}")
+    print(f"Гипотезы для {model_version}")
     print("=" * 70)
     for i, h in enumerate(hypotheses, 1):
-        print(f"\n[{i}/{len(hypotheses)}] [novelty={h.novelty}, cost={h.experiment_cost_estimate}] {h.statement}")
-        print(f"  Rationale: {h.rationale}")
-        print(f"  Experiment: fix {h.proposed_experiment.get('fix')}")
-        print(f"              sweep {h.proposed_experiment.get('sweep')}")
-        print(f"  Expected: {h.expected_outcome}")
-        print(f"  Economic baseline: {h.economic_impact.vs_classical_baseline}")
-        print(f"  Estimated saving: {h.economic_impact.estimated_saving}")
-        print(f"  Measurement: {h.economic_impact.measurement_method}")
-        print(f"  id={h.id}, tags={h.tags}")
+        rv = reviews_by_id.get(h.id)
+        print(
+            f"\n[{i}/{len(hypotheses)}] "
+            f"[новизна={h.novelty}, стоимость={h.experiment_cost_estimate}] "
+            f"{h.statement}"
+        )
+        print(f"  Обоснование: {h.rationale}")
+        print(f"  Эксперимент: fix {h.proposed_experiment.get('fix')}")
+        print(f"               sweep {h.proposed_experiment.get('sweep')}")
+        print(f"  Ожидание: {h.expected_outcome}")
+        print(f"  Сравнение с классикой: {h.economic_impact.vs_classical_baseline}")
+        print(f"  Оценка экономии: {h.economic_impact.estimated_saving}")
+        print(f"  Метод проверки: {h.economic_impact.measurement_method}")
+        print(f"  id={h.id}, теги={h.tags}")
+        if rv:
+            print(
+                f"  ── Рецензия: {rv['verdict']} "
+                f"(уверенность {rv['confidence']})"
+            )
+            print(f"     {rv['summary']}")
+            for s in rv.get("strengths", []):
+                print(f"     + {s}")
+            for w in rv.get("weaknesses", []):
+                print(f"     − {w}")
+            if rv.get("suggested_revision"):
+                print(f"     ⤳ Правка: {rv['suggested_revision']}")
 
 
 if __name__ == "__main__":
