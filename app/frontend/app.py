@@ -779,6 +779,132 @@ with tab_predict:
                 c3d.metric("CEN", f"{df_feat['cen'].iloc[0]:.3f}")
                 c4d.metric("Микролегирование", f"{df_feat['microalloying_sum'].iloc[0]:.4f}")
 
+            # Anomaly Explainer — показываем кнопку если OOD или CI слишком широкий
+            ci_width = hi_p - lo_p
+            target_range = next(
+                (t.range for t in _profile_p.target_properties
+                 if t.id == _meta_p["target"]),
+                [0, 1],
+            )
+            target_span = target_range[1] - target_range[0]
+            wide_ci = ci_width > 0.5 * target_span if target_span > 0 else False
+
+            if (ood or wide_ci) and _llm_ok:
+                st.divider()
+                with st.expander(
+                    "🔬 PhD-диагностика аномалии (Sonnet)",
+                    expanded=ood,  # авто-раскрытие при OOD
+                ):
+                    st.markdown(
+                        "**Почему этот прогноз требует осторожности.** "
+                        "Состав/параметры процесса либо вне training "
+                        "distribution (OOD), либо CI слишком широкий "
+                        "относительно целевого диапазона свойства. "
+                        "Sonnet PhD-металлург разберёт по полочкам какие "
+                        "фичи аномальны, какие mechanism-риски, что "
+                        "произойдёт в производстве и как скорректировать."
+                    )
+                    if st.button(
+                        "🔬 Объяснить почему рискованно",
+                        type="primary", key="explain_ood_btn",
+                        help="Sonnet анализ ~30-40 секунд, ~$0.05-0.07.",
+                    ):
+                        from app.backend.anomaly_explainer import (
+                            make_anomaly_explainer,
+                        )
+                        explainer = make_anomaly_explainer()
+                        if explainer is None:
+                            st.error("AnomalyExplainer недоступен")
+                        else:
+                            tr = _meta_p["training_ranges"]
+                            recipe = {
+                                f: float(df_feat[f].iloc[0])
+                                for f in df_feat.columns
+                                if f in tr
+                            }
+                            out_of_range = []
+                            for f, v in recipe.items():
+                                lo_f, hi_f = tr[f]
+                                if v < lo_f or v > hi_f:
+                                    out_of_range.append({
+                                        "feature": f, "value": v,
+                                        "training_range": [lo_f, hi_f],
+                                    })
+                            with st.spinner(
+                                "Sonnet PhD-диагностика…"
+                            ):
+                                exp = explainer.explain({
+                                    "model_version": selected_model,
+                                    "steel_class": _class_id_p,
+                                    "target": _meta_p["target"],
+                                    "recipe": recipe,
+                                    "training_ranges": tr,
+                                    "training_medians": {
+                                        f: (lo_f + hi_f) / 2
+                                        for f, (lo_f, hi_f) in tr.items()
+                                    },
+                                    "ml_prediction": {
+                                        "predicted": mean,
+                                        "lower_90": lo_p,
+                                        "upper_90": hi_p,
+                                        "ci_width": ci_width,
+                                    },
+                                    "ood_flag": ood,
+                                    "ood_score": float(
+                                        pred["log_density"].iloc[0]
+                                    ),
+                                    "out_of_range_features": out_of_range,
+                                })
+                            if exp is None:
+                                st.error("Объяснение не получено")
+                            else:
+                                sev_color = {
+                                    "LOW": "#558ccc",
+                                    "MEDIUM": "#f17105",
+                                    "HIGH": "#d11149",
+                                }.get(exp.severity, "#888")
+                                sev_label = {
+                                    "LOW": "НИЗКАЯ",
+                                    "MEDIUM": "СРЕДНЯЯ",
+                                    "HIGH": "ВЫСОКАЯ",
+                                }.get(exp.severity, exp.severity)
+                                st.markdown(
+                                    f"<div style='background:{sev_color};"
+                                    f"color:white;padding:8px 12px;"
+                                    f"border-radius:6px;font-weight:600;"
+                                    f"display:inline-block'>"
+                                    f"Опасность: {sev_label}</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                st.markdown(f"**Резюме.** {exp.summary}")
+
+                                if exp.anomalous_features:
+                                    st.markdown("**Аномальные параметры:**")
+                                    for af in exp.anomalous_features:
+                                        st.markdown(
+                                            f"- `{af.feature}` = "
+                                            f"{af.value:.4f} "
+                                            f"(training "
+                                            f"[{af.training_range[0]:.4f}, "
+                                            f"{af.training_range[1]:.4f}], "
+                                            f"тип: {af.deviation_kind})"
+                                        )
+                                        st.caption(af.note)
+
+                                if exp.mechanism_concerns:
+                                    st.markdown("**Mechanism-риски:**")
+                                    for m in exp.mechanism_concerns:
+                                        st.markdown(f"- {m}")
+
+                                st.markdown(
+                                    f"**Производственные риски.** "
+                                    f"{exp.production_risks}"
+                                )
+                                st.info(
+                                    f"**Рекомендуемая правка.** "
+                                    f"{exp.suggested_correction}"
+                                )
+
 
 # =========================================================================
 # Tab: Al Deoxidation Calculator (on-line LF advisory)
