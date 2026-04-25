@@ -128,7 +128,7 @@ except Exception as e:
 # LLM-Critic status
 _llm_ok = bool(os.environ.get("ANTHROPIC_API_KEY"))
 st.sidebar.metric(
-    "🤖 LLM-Critic",
+    "🤖 Critic на основе глубокой нейронной сети",
     "✓ активен" if _llm_ok else "— нет ключа",
 )
 
@@ -527,7 +527,7 @@ with tab_train:
             "Нажать «🤖 Обучить» — занимает 1-5 минут в зависимости "
             "от trials и размера данных",
             "После обучения модель появится в sidebar dropdown "
-            "и станет доступна для прогноза, дизайна, AI-вкладок",
+            "и станет доступна для прогноза, дизайна, вкладок с глубокой нейронной сетью",
         ],
     )
 
@@ -631,12 +631,12 @@ with tab_train:
             else:
                 st.success("✓ Critic не нашёл проблем")
 
-            # LLM-Critic (Claude Sonnet 4.6) — only runs with ANTHROPIC_API_KEY
+            # LLM-Critic — only runs with ANTHROPIC_API_KEY
             from app.backend.critic_llm import make_llm_critic
             from dataclasses import asdict
             _llm = make_llm_critic()
             if _llm is not None:
-                with st.spinner("🤖 LLM-Critic проверяет..."):
+                with st.spinner("🤖 Critic на основе глубокой нейронной сети проверяет..."):
                     llm_obs = _llm.review_training(critic_ctx)
                     st.session_state["llm_observations"] = [
                         asdict(o) for o in llm_obs
@@ -644,7 +644,7 @@ with tab_train:
 
             llm_obs_rendered = st.session_state.get("llm_observations", [])
             if llm_obs_rendered:
-                st.subheader("🤖 LLM-Critic (Claude Sonnet 4.6)")
+                st.subheader("🤖 Critic на основе глубокой нейронной сети")
                 for o in llm_obs_rendered:
                     sev = o["severity"]
                     msg = (f"**[{sev}] {o['category']}:** {o['message']}\n\n"
@@ -656,7 +656,7 @@ with tab_train:
                     else:
                         st.info(msg)
             elif _llm is not None:
-                st.caption("🤖 LLM-Critic: проблем не обнаружено")
+                st.caption("🤖 Critic на основе глубокой нейронной сети: проблем не обнаружено")
 
             # Feature importance chart
             st.subheader("Feature importance")
@@ -792,7 +792,7 @@ with tab_predict:
             if (ood or wide_ci) and _llm_ok:
                 st.divider()
                 with st.expander(
-                    "🔬 PhD-диагностика аномалии (Sonnet)",
+                    "🔬 PhD-диагностика аномалии",
                     expanded=ood,  # авто-раскрытие при OOD
                 ):
                     st.markdown(
@@ -800,14 +800,14 @@ with tab_predict:
                         "Состав/параметры процесса либо вне training "
                         "distribution (OOD), либо CI слишком широкий "
                         "относительно целевого диапазона свойства. "
-                        "Sonnet PhD-металлург разберёт по полочкам какие "
+                        "PhD-металлург на основе глубокой нейронной сети разберёт по полочкам какие "
                         "фичи аномальны, какие mechanism-риски, что "
                         "произойдёт в производстве и как скорректировать."
                     )
                     if st.button(
                         "🔬 Объяснить почему рискованно",
                         type="primary", key="explain_ood_btn",
-                        help="Sonnet анализ ~30-40 секунд, ~$0.05-0.07.",
+                        help="Анализ глубокой нейронной сети ~30-40 секунд, ~$0.05-0.07.",
                     ):
                         from app.backend.anomaly_explainer import (
                             make_anomaly_explainer,
@@ -831,7 +831,7 @@ with tab_predict:
                                         "training_range": [lo_f, hi_f],
                                     })
                             with st.spinner(
-                                "Sonnet PhD-диагностика…"
+                                "PhD-диагностика…"
                             ):
                                 exp = explainer.explain({
                                     "model_version": selected_model,
@@ -914,7 +914,7 @@ with tab_deox:
     st.header("🔥 Раскисление жидкой стали алюминием")
     st.caption(
         "Physics-based advisory на базе 3 термодинамических моделей "
-        "**+ Sonnet PhD ladle metallurgist + adversarial критик**. "
+        "**+ PhD ladle metallurgist на основе глубокой нейронной сети + adversarial критик**. "
         "Расчёт на каждую плавку с full operator protocol."
     )
     _tab_intro(
@@ -927,15 +927,15 @@ with tab_deox:
             "post-melt. Compare — три термодинамические модели "
             "(Fruehan 1985, Sigworth-Elliott 1974, Hayashi-Yamamoto "
             "2013) рядом для cross-validation.\n\n"
-            "**Слой 2 — AI-советник + PhD-критик** (sub-tab «🤖 "
-            "AI-советник + критик»). Sonnet ранга senior ladle "
+            "**Слой 2 — советник на основе глубокой нейронной сети + PhD-критик** (sub-tab «🤖 "
+            "советник на основе глубокой нейронной сети + критик»). агент ранга senior ladle "
             "metallurgist превращает 3 thermo числа в полный "
             "operator protocol: Al kg + форма (wire/cube/powder) + "
             "rate подачи + recovery factor + kinetic timing + "
             "конкретные риски плавки + прогноз включений + "
             "pre/post actions с цифрами + evidence (artifact + "
             "mechanism citations Turkdogan, Cramb, Cicutti, Ghosh). "
-            "Второй Sonnet — PhD-критик уровня journal reviewer #2 — "
+            "Второй агент-нейросеть — PhD-критик уровня journal reviewer #2 — "
             "делает adversarial peer review с **построчным fact-check "
             "evidence** (VALID / INVALID / UNVERIFIABLE) и ловит "
             "арифметические ошибки, неверные recovery factors, "
@@ -947,12 +947,12 @@ with tab_deox:
             "Inverse / Compare)",
             "**Технолог цеха внепечной обработки** "
             "(secondary metallurgy) — на сложных плавках включает "
-            "AI-советник для full protocol, особенно когда O_a "
+            "советник на основе глубокой нейронной сети для full protocol, особенно когда O_a "
             "высокий, Mn/S пограничный, или slag FeO нестабилен",
             "**Senior ladle metallurgist / руководитель secondary "
             "metallurgy** на крупных комбинатах класса voestalpine "
             "Linz, ArcelorMittal Florange, Salzgitter Flachstahl — "
-            "AI-советник заменяет 30-минутное совещание со старшим "
+            "советник на основе глубокой нейронной сети заменяет 30-минутное совещание со старшим "
             "коллегой 3-минутным protocol'ом с PhD-рецензией, "
             "включая math fact-check",
             "**Process engineer / R&D лаборатория секундарной "
@@ -975,7 +975,7 @@ with tab_deox:
             "**Sub-tab «⚖️ Сравнить модели»**: 3 thermo-модели "
             "parallel — если расходятся >20%, physics в этой зоне "
             "сама по себе неточная, решение принимать по запасу",
-            "**Sub-tab «🤖 AI-советник + критик»** (требует "
+            "**Sub-tab «🤖 советник на основе глубокой нейронной сети + критик»** (требует "
             "ANTHROPIC_API_KEY): ввести параметры плавки + опционально "
             "композицию + slag FeO + grade target → запустить полный "
             "цикл (~3 минуты, ~$0.20-0.25). Получить:\n"
@@ -1030,7 +1030,7 @@ with tab_deox:
 
     sub_fwd, sub_inv, sub_cmp, sub_ai = st.tabs([
         "Сколько Al нужно", "Качество Al по факту",
-        "⚖️ Сравнить модели", "🤖 AI-советник + критик",
+        "⚖️ Сравнить модели", "🤖 советник на основе глубокой нейронной сети + критик",
     ])
 
     # ──────── Forward ────────
@@ -1210,15 +1210,15 @@ with tab_deox:
     with sub_ai:
         st.markdown(
             "**Полный operator protocol** на ladle treatment: к 3 thermo-"
-            "числам Sonnet PhD ladle metallurgist добавляет форму Al, "
+            "числам PhD ladle metallurgist на основе глубокой нейронной сети добавляет форму Al, "
             "rate подачи, kinetic timing, риски, прогноз включений, "
-            "pre/post actions. Второй Sonnet — PhD-критик уровня "
+            "pre/post actions. Второй агент-нейросеть — PhD-критик уровня "
             "journal reviewer #2 — даёт adversarial peer review с "
             "построчной проверкой evidence."
         )
 
         if not _llm_ok:
-            st.warning("ANTHROPIC_API_KEY не задан — AI-советник недоступен.")
+            st.warning("ANTHROPIC_API_KEY не задан — советник на основе глубокой нейронной сети недоступен.")
         else:
             st.markdown("##### Параметры плавки")
             ai_c1, ai_c2 = st.columns(2)
@@ -1311,7 +1311,7 @@ with tab_deox:
                         "thermo_estimates": thermo_estimates,
                     }
 
-                    progress.progress(20, text="Sonnet формирует protocol (~80 с)…")
+                    progress.progress(20, text="нейросеть формирует protocol (~80 с)…")
                     advisory = advisor.advise(ctx)
                     if advisory is None:
                         progress.empty()
@@ -1461,19 +1461,19 @@ with tab_deox:
 # =========================================================================
 
 with tab_hyp:
-    st.header("💡 Гипотезы от ИИ-наблюдателя")
+    st.header("💡 Гипотезы от наблюдателя на основе глубокой нейронной сети")
     st.caption(
-        "LLM просматривает обученную модель и предлагает testable гипотезы "
+        "Глубокая нейронная сеть просматривает обученную модель и предлагает testable гипотезы "
         "с оценкой экономического эффекта vs классическая практика."
     )
     _tab_intro(
         purpose=(
-            "Sonnet смотрит на обученную модель и формулирует 3-5 "
+            "агент-нейросеть смотрит на обученную модель и формулирует 3-5 "
             "testable research hypotheses — predictions, которые можно "
             "проверить экспериментально и которые имеют **экономический "
             "эффект vs классическая практика** (trial-and-error / "
             "handbook recipe / Thermo-Calc / substitution baseline). "
-            "Второй Sonnet — PhD-критик — делает adversarial peer review "
+            "Второй агент-нейросеть — PhD-критик — делает adversarial peer review "
             "каждой гипотезы и выдаёт ACCEPT / REVISE / REJECT с "
             "построчной проверкой evidence."
         ),
@@ -1758,23 +1758,23 @@ with tab_hyp:
 # =========================================================================
 
 with tab_recipe:
-    st.header("🧪 Подбор рецепта — Sonnet PhD pair")
+    st.header("🧪 Подбор рецепта — PhD-пара на основе глубокой нейронной сети")
     st.caption(
-        "Sonnet проектирует рецепт с двойной evidence (artifact + mechanism), "
-        "ML+cost проверяет численно, второй Sonnet делает PhD peer-review с "
+        "агент-нейросеть проектирует рецепт с двойной evidence (artifact + mechanism), "
+        "ML+cost проверяет численно, второй агент-критик делает PhD peer-review с "
         "построчной проверкой evidence."
     )
     _tab_intro(
         purpose=(
             "AI-driven подбор production-рецептa с двойной "
-            "доказательной базой. Sonnet-designer формирует 3-4 "
+            "доказательной базой. designer-нейросеть формирует 3-4 "
             "альтернативные композиции; каждое изменение легирующего "
             "элемента обосновано **одновременно** artifact-данными "
             "(feature_importance, training_ranges) **и** classical "
             "metallurgical mechanism (Hall-Petch, Hollomon-Jaffe, "
             "Grossmann's DI, Pickering, Andrews equations, CEV/Pcm). "
             "Затем XGBoost+cost_model численно проверяют каждый "
-            "рецепт. Sonnet-критик уровня journal reviewer #2 делает "
+            "рецепт. критик на основе глубокой нейронной сети уровня journal reviewer #2 делает "
             "adversarial review с построчным fact-check evidence."
         ),
         audience=[
@@ -2222,7 +2222,7 @@ with tab_al:
             "относительно best-observed-training f*, делится на cost — "
             "получается ranked queue \"какой следующий эксперимент даст "
             "максимальный ожидаемый прирост свойства на каждый €\". "
-            "Чисто numerical, без LLM, дёшево (~150 мс)."
+            "Чисто numerical, без глубокой нейронной сети, дёшево (~150 мс)."
         ),
         audience=[
             "**Planning lead в R&D** — формирование experimental queue "
@@ -2501,7 +2501,7 @@ with tab_history:
             "запись: фаза, что решено, reasoning, контекст (полный "
             "snapshot входных и выходных данных), теги, автор. "
             "Это **persistent memory проекта** — компенсирует "
-            "отсутствие memory у LLM-сессий и обеспечивает "
+            "отсутствие memory у сессий глубокой нейронной сети и обеспечивает "
             "auditability для regulated industries."
         ),
         audience=[
