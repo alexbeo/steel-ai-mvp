@@ -104,6 +104,7 @@ if selected_model:
         _class_label = {
             "pipe_hsla": "🔩 Pipe HSLA",
             "en10083_qt": "🔨 EN 10083 Q&T",
+            "fatigue_carbon_steel": "🔁 Carbon Fatigue (Agrawal NIMS)",
         }.get(_class_id, _class_id)
         st.sidebar.caption(f"Класс: **{_class_label}**")
         _meta_target = _meta.get("target", "?")
@@ -136,11 +137,12 @@ st.sidebar.metric(
 # Main tabs
 # =========================================================================
 
-tab_design, tab_train, tab_predict, tab_deox, tab_history = st.tabs([
+tab_design, tab_train, tab_predict, tab_deox, tab_hyp, tab_history = st.tabs([
     "🎯 Дизайн сплава",
     "🤖 Обучение модели",
     "📊 Прогноз",
     "🔥 Раскисление",
+    "💡 Гипотезы",
     "📚 История",
 ])
 
@@ -886,6 +888,151 @@ with tab_deox:
 # =========================================================================
 # Tab 4: Decision Log
 # =========================================================================
+
+# =========================================================================
+# Tab 5: Hypotheses (LLM-generated, A2 from AI integration roadmap)
+# =========================================================================
+
+with tab_hyp:
+    st.header("💡 Гипотезы от ИИ-наблюдателя")
+    st.caption(
+        "LLM просматривает обученную модель и предлагает testable гипотезы "
+        "с оценкой экономического эффекта vs классическая практика."
+    )
+
+    if not selected_model:
+        st.warning("Сначала выберите активную модель в sidebar (или обучите).")
+    elif not _llm_ok:
+        st.warning(
+            "ANTHROPIC_API_KEY не задан в окружении. "
+            "Hypothesis Generator недоступен."
+        )
+    else:
+        from decision_log.logger import query_decisions
+
+        st.markdown(f"**Активная модель:** `{selected_model}`")
+
+        existing_runs = [
+            d for d in query_decisions(phase="training", limit=200)
+            if d.get("author") == "hypothesis_generator"
+            and d.get("context", {}).get("model_version") == selected_model
+        ]
+        st.caption(
+            f"Прошлых запусков на этой модели: **{len(existing_runs)}**"
+            + (
+                f" · последний {existing_runs[0]['timestamp'][:16]}"
+                if existing_runs else ""
+            )
+        )
+
+        run_btn = st.button(
+            "🔮 Сгенерировать гипотезы",
+            type="primary",
+            help=(
+                "Один запуск ~100 секунд, ~$0.08. "
+                "Sonnet 4.6 анализирует артефакт модели."
+            ),
+        )
+
+        if run_btn:
+            from scripts.generate_hypotheses_for_model import build_context
+            from app.backend.hypothesis_generator import make_hypothesis_generator
+
+            gen = make_hypothesis_generator()
+            if gen is None:
+                st.error("HypothesisGenerator unavailable (anthropic SDK?)")
+            else:
+                with st.spinner(
+                    "Sonnet анализирует артефакт модели… ~1-2 минуты"
+                ):
+                    ctx = build_context(selected_model)
+                    new_hypotheses = gen.generate(ctx)
+                if not new_hypotheses:
+                    st.error(
+                        "Получено 0 гипотез. Проверьте логи / model artifact."
+                    )
+                else:
+                    st.success(f"Получено {len(new_hypotheses)} гипотез")
+                    st.rerun()
+
+        display_runs = existing_runs[:1]
+        if not display_runs:
+            st.info(
+                "Запусков ещё нет — нажмите кнопку выше чтобы получить "
+                "первые гипотезы."
+            )
+        else:
+            run = display_runs[0]
+            usage = run.get("context", {}).get("usage", {})
+            cols = st.columns(4)
+            cols[0].metric("Гипотез", len(run["context"].get("hypotheses", [])))
+            cols[1].metric("Latency, s", f"{usage.get('latency_s', 0):.1f}")
+            cols[2].metric(
+                "Tokens out",
+                int(usage.get("output_tokens", 0)),
+            )
+            cache_hit = usage.get("cache_read", 0)
+            cols[3].metric(
+                "Cache hit",
+                "✓" if cache_hit > 100 else "—",
+                help=f"cache_read={cache_hit} tokens",
+            )
+
+            novelty_color = {
+                "HIGH": "#d11149",
+                "MEDIUM": "#f17105",
+                "LOW": "#558ccc",
+            }
+            cost_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
+
+            for i, h in enumerate(run["context"]["hypotheses"], start=1):
+                novelty = h.get("novelty", "?")
+                cost = h.get("experiment_cost_estimate", "?")
+                color = novelty_color.get(novelty, "#888")
+                with st.container(border=True):
+                    title_col, badge_col = st.columns([8, 2])
+                    title_col.markdown(
+                        f"### {i}. {h.get('statement', '—')}"
+                    )
+                    badge_col.markdown(
+                        f"<div style='text-align:right'>"
+                        f"<span style='background:{color};color:white;"
+                        f"padding:3px 8px;border-radius:4px;"
+                        f"font-size:0.85em'>novelty: {novelty}</span><br>"
+                        f"<span style='font-size:0.85em'>"
+                        f"{cost_emoji.get(cost, '⚪')} cost: {cost}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"**Обоснование.** {h.get('rationale', '—')}")
+
+                    pe = h.get("proposed_experiment", {})
+                    fix = pe.get("fix", {})
+                    sweep = pe.get("sweep", {})
+                    st.markdown("**Предлагаемый эксперимент.**")
+                    fc, sc = st.columns(2)
+                    fc.markdown("Зафиксировать:")
+                    fc.json(fix)
+                    sc.markdown("Свипировать:")
+                    sc.json(sweep)
+
+                    st.markdown(
+                        f"**Ожидаемый исход.** {h.get('expected_outcome', '—')}"
+                    )
+
+                    ei = h.get("economic_impact", {})
+                    st.markdown("**Экономический эффект.**")
+                    st.markdown(
+                        f"- _vs_ классика: {ei.get('vs_classical_baseline', '—')}\n"
+                        f"- Оценка экономии: **{ei.get('estimated_saving', '—')}**\n"
+                        f"- Метод проверки: {ei.get('measurement_method', '—')}"
+                    )
+
+                    st.caption(
+                        f"id={h.get('id', '?')} · tags: "
+                        f"{', '.join(h.get('tags', []))}"
+                    )
+
 
 with tab_history:
     st.header("История решений проекта")
