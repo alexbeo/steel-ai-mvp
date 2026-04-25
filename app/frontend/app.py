@@ -860,8 +860,9 @@ with tab_deox:
         key="deox_model_id",
     )
 
-    sub_fwd, sub_inv, sub_cmp = st.tabs([
-        "Сколько Al нужно", "Качество Al по факту", "⚖️ Сравнить модели",
+    sub_fwd, sub_inv, sub_cmp, sub_ai = st.tabs([
+        "Сколько Al нужно", "Качество Al по факту",
+        "⚖️ Сравнить модели", "🤖 AI-советник + критик",
     ])
 
     # ──────── Forward ────────
@@ -1036,6 +1037,251 @@ with tab_deox:
                 color=alt.Color("Модель:N", legend=None),
             )
             st.altair_chart(chart, use_container_width=True)
+
+    # ──────── AI Advisor + PhD Critic ────────
+    with sub_ai:
+        st.markdown(
+            "**Полный operator protocol** на ladle treatment: к 3 thermo-"
+            "числам Sonnet PhD ladle metallurgist добавляет форму Al, "
+            "rate подачи, kinetic timing, риски, прогноз включений, "
+            "pre/post actions. Второй Sonnet — PhD-критик уровня "
+            "journal reviewer #2 — даёт adversarial peer review с "
+            "построчной проверкой evidence."
+        )
+
+        if not _llm_ok:
+            st.warning("ANTHROPIC_API_KEY не задан — AI-советник недоступен.")
+        else:
+            st.markdown("##### Параметры плавки")
+            ai_c1, ai_c2 = st.columns(2)
+            ai_oa_init = ai_c1.number_input(
+                "O_a измеренный, ppm",
+                0.0, 2000.0, 280.0, step=10.0, key="ai_oa_init",
+            )
+            ai_target = ai_c2.number_input(
+                "Target O_a, ppm",
+                0.5, 50.0, 5.0, step=0.5, key="ai_target",
+            )
+            ai_c3, ai_c4 = st.columns(2)
+            ai_T = ai_c3.number_input(
+                "T расплава, °C",
+                1400.0, 1700.0, 1580.0, step=5.0, key="ai_T",
+            )
+            ai_mass = ai_c4.number_input(
+                "Масса стали, т",
+                1.0, 500.0, 100.0, step=5.0, key="ai_mass",
+            )
+
+            st.markdown("##### Композиция (опционально, помогает критику ловить риски)")
+            cm1, cm2, cm3, cm4 = st.columns(4)
+            ai_c_pct = cm1.number_input("C, wt%", 0.0, 1.5, 0.20, step=0.01, key="ai_c")
+            ai_mn_pct = cm2.number_input("Mn, wt%", 0.0, 3.0, 0.85, step=0.05, key="ai_mn")
+            ai_si_pct = cm3.number_input("Si, wt%", 0.0, 2.5, 0.30, step=0.05, key="ai_si")
+            ai_s_pct = cm4.number_input("S, wt%", 0.0, 0.05, 0.012, step=0.002, key="ai_s")
+            cm5, cm6, cm7 = st.columns(3)
+            ai_p_pct = cm5.number_input("P, wt%", 0.0, 0.05, 0.018, step=0.002, key="ai_p")
+            ai_slag_feo = cm6.number_input(
+                "Slag FeO, %", 0.0, 15.0, 2.5, step=0.5, key="ai_slag_feo",
+            )
+            ai_grade = cm7.text_input(
+                "Целевой grade / задача", value="строительная конструкционная",
+                key="ai_grade",
+            )
+
+            run_ai_btn = st.button(
+                "🤖 Получить полный protocol с PhD-рецензией",
+                type="primary", key="ai_run_btn",
+                help="Полный цикл ~3 минуты, ~$0.20-0.25.",
+            )
+
+            if run_ai_btn:
+                from dataclasses import asdict as _asdict
+                from app.backend.deoxidation import compare_all_models
+                from app.backend.deoxidation_advisor import (
+                    make_deoxidation_advisor,
+                )
+                from app.backend.deoxidation_critic import (
+                    make_deoxidation_critic,
+                )
+
+                advisor = make_deoxidation_advisor()
+                critic = make_deoxidation_critic()
+                if advisor is None or critic is None:
+                    st.error("Advisor или critic недоступны")
+                else:
+                    progress = st.progress(0, text="Считаю 3 thermo-модели…")
+                    cmp_res = compare_all_models(
+                        o_a_initial_ppm=ai_oa_init,
+                        target_o_a_ppm=ai_target,
+                        temperature_C=ai_T,
+                        steel_mass_ton=ai_mass,
+                        al_purity_pct=99.7,
+                        burn_off_pct=20.0,
+                    )
+                    thermo_estimates = {
+                        r.model_id: round(r.al_total_kg, 2)
+                        for r in cmp_res
+                    }
+                    heat_context = {
+                        "o_a_init_ppm": float(ai_oa_init),
+                        "target_o_a_ppm": float(ai_target),
+                        "temp_c": float(ai_T),
+                        "mass_t": float(ai_mass),
+                        "composition": {
+                            "c_pct": float(ai_c_pct),
+                            "mn_pct": float(ai_mn_pct),
+                            "si_pct": float(ai_si_pct),
+                            "s_pct": float(ai_s_pct),
+                            "p_pct": float(ai_p_pct),
+                            "mn_s_ratio": float(ai_mn_pct / max(ai_s_pct, 1e-6)),
+                        },
+                        "slag_feo_pct": float(ai_slag_feo),
+                        "grade_target": ai_grade,
+                    }
+                    ctx = {
+                        "heat_context": heat_context,
+                        "thermo_estimates": thermo_estimates,
+                    }
+
+                    progress.progress(20, text="Sonnet формирует protocol (~80 с)…")
+                    advisory = advisor.advise(ctx)
+                    if advisory is None:
+                        progress.empty()
+                        st.error("Advisor вернул None")
+                    else:
+                        progress.progress(60, text="PhD-критик делает peer-review (~80 с)…")
+                        verdict = critic.review(ctx, _asdict(advisory))
+                        progress.progress(95, text="Сохраняю результат…")
+                        from decision_log.logger import log_decision
+                        log_decision(
+                            phase="deoxidation",
+                            decision=(
+                                f"Deox cycle: Al={advisory.al_addition_kg:.1f} kg "
+                                f"({advisory.al_form}), "
+                                f"критик={verdict.verdict if verdict else 'N/A'}"
+                            ),
+                            reasoning=(
+                                f"O_a {ai_oa_init}→{ai_target} ppm, "
+                                f"T={ai_T}°C, mass={ai_mass}т"
+                            ),
+                            context={
+                                "heat_context": heat_context,
+                                "thermo_estimates": thermo_estimates,
+                                "advisory": _asdict(advisory),
+                                "review": (
+                                    _asdict(verdict) if verdict else None
+                                ),
+                            },
+                            author="ui",
+                            tags=["deoxidation_cycle", "sonnet-4-6"],
+                        )
+                        progress.progress(100, text="Готово")
+                        st.success(
+                            f"Protocol получен. Вердикт критика: "
+                            f"{verdict.verdict if verdict else 'нет'}"
+                        )
+
+                        # Render advisory
+                        st.divider()
+                        st.markdown("### 🤖 Operator protocol")
+                        st.markdown(f"**Резюме.** {advisory.summary}")
+
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("Al total, кг", f"{advisory.al_addition_kg:.1f}")
+                        m2.metric("Форма", advisory.al_form)
+                        m3.metric("Recovery, %", f"{advisory.expected_recovery_pct:.0f}")
+                        m4.metric(
+                            "Время до target",
+                            f"{advisory.kinetic_timing_min[0]:.0f}-"
+                            f"{advisory.kinetic_timing_min[1]:.0f} мин",
+                        )
+
+                        st.markdown(f"**Стратегия подачи.** {advisory.addition_strategy}")
+                        st.markdown(
+                            f"**Сходимость 3 thermo-моделей.** "
+                            f"{advisory.model_convergence_note}"
+                        )
+
+                        if advisory.risk_flags:
+                            st.markdown("**⚠️ Риски этой плавки:**")
+                            for r in advisory.risk_flags:
+                                st.markdown(f"- {r}")
+
+                        st.markdown(
+                            f"**Прогноз включений.** {advisory.inclusion_forecast}"
+                        )
+
+                        pp1, pp2 = st.columns(2)
+                        pp1.markdown("**До добавки Al:**")
+                        for a in advisory.pre_actions:
+                            pp1.markdown(f"- {a}")
+                        pp2.markdown("**После добавки Al:**")
+                        for a in advisory.post_actions:
+                            pp2.markdown(f"- {a}")
+
+                        st.markdown("**Доказательная база:**")
+                        for ev in advisory.evidence:
+                            st.markdown(f"- {ev}")
+
+                        st.caption(
+                            f"Уверенность советника: {advisory.confidence}  ·  "
+                            f"id={advisory.id}"
+                        )
+
+                        # Render critic verdict
+                        if verdict is not None:
+                            st.divider()
+                            v_color = {
+                                "ACCEPT": "#3a9d23",
+                                "REVISE": "#e0a800",
+                                "REJECT": "#c0392b",
+                            }.get(verdict.verdict, "#888")
+                            v_label = {
+                                "ACCEPT": "ПРИНЯТО",
+                                "REVISE": "ТРЕБУЕТ ПРАВОК",
+                                "REJECT": "ОТКЛОНЕНО",
+                            }.get(verdict.verdict, verdict.verdict)
+                            st.markdown(
+                                f"<div style='display:flex;align-items:center;"
+                                f"gap:12px;margin-bottom:6px'>"
+                                f"<span style='background:{v_color};color:white;"
+                                f"padding:4px 10px;border-radius:4px;"
+                                f"font-weight:600'>👨‍🔬 PhD-критик: "
+                                f"{v_label}</span>"
+                                f"<span style='color:#666;font-size:0.9em'>"
+                                f"уверенность {verdict.confidence}</span>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+                            st.markdown(f"_{verdict.summary}_")
+
+                            if verdict.evidence_check:
+                                st.markdown("**Fact-check доказательной базы:**")
+                                ec_mark = {
+                                    "VALID": "✓", "INVALID": "✗",
+                                    "UNVERIFIABLE": "?",
+                                }
+                                for ec in verdict.evidence_check:
+                                    mark = ec_mark.get(ec.verdict, "•")
+                                    st.markdown(
+                                        f"- {mark} **{ec.claim}** — {ec.note}"
+                                    )
+
+                            sl, sr = st.columns(2)
+                            if verdict.strengths:
+                                sl.markdown("**Сильные стороны**")
+                                for s in verdict.strengths:
+                                    sl.markdown(f"- {s}")
+                            if verdict.weaknesses:
+                                sr.markdown("**Слабые стороны**")
+                                for w in verdict.weaknesses:
+                                    sr.markdown(f"- {w}")
+
+                            if verdict.suggested_revision:
+                                st.info(
+                                    f"**Предложение правки.** "
+                                    f"{verdict.suggested_revision}"
+                                )
 
 
 # =========================================================================
