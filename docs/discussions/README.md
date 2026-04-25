@@ -25,3 +25,4 @@
 | 2026-04-25 | [A2 prompt v2 vs v1 — экономический эффект как required](2026-04-25_a2_prompt_v2_comparison.md) | decided |
 | 2026-04-25 | [Что подаётся СЕЙЧАС vs что просить у реального завода](2026-04-25_real_plant_data_schema.md) | decided |
 | 2026-04-25 | [Hypothesis Critic — first live cycle, PhD-уровень подтверждён](2026-04-25_hypothesis_critic_live_verification.md) | decided |
+| 2026-04-25 | [A1 feature discovery — architecture PASSED, zero uplift on saturated baseline](2026-04-25_a1_feature_discovery_first_run.md) | decided |
