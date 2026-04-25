@@ -30,9 +30,18 @@ PYTHONPATH=. python app/backend/engine.py
 PYTHONPATH=. python pattern_library/patterns.py
 PYTHONPATH=. python decision_log/logger.py
 
-# Тесты / линт (pytest и ruff в requirements.txt, каталог app/tests/ сейчас пуст)
+# Тесты / линт (pytest и ruff в requirements.txt; в .venv 132+ тестов)
 pytest app/tests -v
 ruff check .
+
+# AI-capabilities runners (требуют ANTHROPIC_API_KEY в .env)
+PYTHONPATH=. .venv/bin/python scripts/generate_hypotheses_for_model.py    # A2
+PYTHONPATH=. .venv/bin/python scripts/discover_features_for_model.py      # A1
+PYTHONPATH=. .venv/bin/python scripts/symbolic_regression_for_model.py    # B1
+PYTHONPATH=. .venv/bin/python scripts/show_property_cost_on_agrawal.py    # EC.1
+PYTHONPATH=. .venv/bin/python scripts/design_recipe_with_critic.py        # recipe pair
+PYTHONPATH=. .venv/bin/python scripts/propose_next_experiments.py         # B2
+PYTHONPATH=. .venv/bin/python scripts/explain_ood_record.py               # A3
 ```
 
 ## Архитектура — ключевое для продуктивности
@@ -111,13 +120,34 @@ UI — вкладка «🔥 Раскисление» с 3 sub-tabs (Forward / I
 
 ### UI и API
 
-- `app/frontend/app.py` — Streamlit с 5 вкладками (Дизайн, Обучение, Прогноз, Раскисление, История). Сам импортирует функции напрямую из `app/backend/*` — не через Orchestrator. Для быстрого UX обучение/дизайн запускаются синхронно с прогресс-баром.
+- `app/frontend/app.py` — Streamlit с **8 вкладками** (Дизайн, Обучение, Прогноз, Раскисление, Гипотезы, Подбор рецепта, Следующие эксперименты, История). Сам импортирует функции напрямую из `app/backend/*` — не через Orchestrator. Для быстрого UX обучение/дизайн запускаются синхронно с прогресс-баром.
 - `app/backend/` содержит намёки на FastAPI, но отдельного `api.py` сейчас нет — FastAPI-слой не реализован.
 - Streamlit опирается на наличие обученных моделей в `models/<version>/`. Если моделей нет — сначала вкладка «Обучение модели».
+- AI-вкладки требуют `ANTHROPIC_API_KEY` в `.env` (gitignored). Без ключа отображают warning и degrade gracefully.
 
-### Данные — синтетика, а не NIMS
+### AI integration roadmap — все 7 capabilities закрыты (2026-04-25)
 
-`data_curator.generate_synthetic_hsla_dataset()` создаёт физически правдоподобный датасет для демо. Реальная загрузка NIMS MatNavi **не реализована** — замена синтетики на загрузчик реальных данных указана в QUICKSTART.md как work item. Датасет сохраняется в `data/hsla_synthetic.parquet` (gitignored).
+Project pivoted from sales-tool framing to MVP focused on AI-driven pattern discovery (см. `docs/discussions/2026-04-25_project_purpose_reframe.md`). Целевые пользователи — R&D engineer + Materials scientist (academic). Все 7 AI capabilities верифицированы живьём на real Agrawal NIMS data:
+
+| ID | Capability | Module | Verified |
+|---|---|---|---|
+| A2 | Hypothesis generator + PhD critic | `app/backend/hypothesis_generator.py` + `hypothesis_critic.py` | 5 hypotheses, 3 HIGH novelty |
+| A1 | LLM feature discovery + retrain truth gate | `feature_discoverer.py` | 5/5 формул применены, null uplift на saturated baseline (architecture works) |
+| B1 | Symbolic regression (gplearn) | `symbolic_regressor.py` | Pareto frontier R²=0.825 при complexity=70 |
+| EC.1 | NSGA-II property+cost showcase | `scripts/show_property_cost_on_agrawal.py` | −€28/т при +181 МПа |
+| Recipe pair | Sonnet PhD designer + critic с evidence-base | `recipe_designer.py` + `recipe_critic.py` | 1 ACCEPT, 2 REVISE, 1 REJECT — найдены mechanism inversion + cost error на порядок |
+| B2 | Active learning (cost-weighted EI) | `active_learner.py` | Top-5 ranked в 150 мс, no LLM call |
+| A3 | Anomaly explainer | `anomaly_explainer.py` | PhD diagnosis с named formulas (Calver, Andrews Ms, Pickering) |
+
+**Промпты — gitignored intellectual property** (`prompts/*.md`, см. `prompts/README.md`). Каждый LLM-модуль грузит свой prompt через `app.backend.prompt_loader.load_prompt(name)`. На свежем клоне без prompts/ модули raise `PromptNotFoundError`.
+
+**Strategic discussions** живут в `docs/discussions/` (15+ файлов от 2026-04-25). Это persistent context для будущих сессий — project purpose, target users, AI roadmap, verification reports каждой capability. См. `docs/discussions/README.md` как индекс.
+
+### Данные — синтетика для HSLA/Q&T, реальные NIMS для fatigue
+
+`data_curator.generate_synthetic_hsla_dataset()` создаёт физически правдоподобный синтетический датасет для HSLA-демо. Q&T (`generate_synthetic_en10083_qt_dataset`) — тоже синтетика.
+
+**Класс `fatigue_carbon_steel`** обучается на **реальных 437 records из Agrawal NIMS 2014** (DOI 10.1186/2193-9772-3-8). Loader — `load_real_agrawal_fatigue_dataset()`. Это первая (и сейчас единственная) production-модель на real-world data; все AI-capabilities верифицированы именно на ней.
 
 ## Языковая конвенция
 
