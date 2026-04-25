@@ -179,8 +179,8 @@ def _build_user_payload(ctx: dict) -> str:
 
 class HypothesisGenerator:
     MODEL_ID = "claude-sonnet-4-6"
-    MAX_TOKENS = 2400
-    TIMEOUT_S = 60.0
+    MAX_TOKENS = 8192
+    TIMEOUT_S = 180.0
 
     def __init__(self, client: Any, model: str | None = None):
         self.client = client
@@ -220,7 +220,17 @@ class HypothesisGenerator:
         try:
             raw = tool_block.input["hypotheses"]
         except (KeyError, TypeError) as e:
-            logger.warning("HypothesisGenerator: bad payload shape: %s", e)
+            stop_reason = getattr(resp, "stop_reason", "unknown")
+            shape = (
+                list(tool_block.input.keys())
+                if isinstance(tool_block.input, dict)
+                else type(tool_block.input).__name__
+            )
+            logger.warning(
+                "HypothesisGenerator: bad payload shape: %s "
+                "(stop_reason=%s, tool_input_keys=%s)",
+                e, stop_reason, shape,
+            )
             return []
 
         hypotheses: list[Hypothesis] = []
