@@ -51,6 +51,30 @@ def latest_model_for_class(class_id: str) -> str | None:
     return candidates[-1] if candidates else None
 
 
+def _load_class_dataset(steel_class: str) -> pd.DataFrame | None:
+    """Get the dataset for a steel class via the registry, with feature
+    engineering applied. Returns None if unknown class or load fails.
+
+    Routes through `get_synthetic_generator` + `compute_features_for_class`
+    — the same path the train tab uses, so a model trained from the UI
+    sees the same columns at inference time. Avoids hardcoded parquet
+    paths that drift when new classes are added.
+    """
+    try:
+        from app.backend.steel_classes import (
+            compute_features_for_class,
+            get_synthetic_generator,
+            load_steel_class,
+        )
+        profile = load_steel_class(steel_class)
+        gen = get_synthetic_generator(profile.synthetic_generator_name)
+        df_raw = gen()
+        return compute_features_for_class(df_raw, steel_class)
+    except Exception as e:
+        logger.warning("can't load dataset for class %s: %s", steel_class, e)
+        return None
+
+
 def build_context(model_version: str) -> dict:
     from app.backend.model_trainer import load_model
 
@@ -63,40 +87,40 @@ def build_context(model_version: str) -> dict:
     steel_class = meta.get("steel_class", "unknown")
     target_distribution = {}
 
-    parquet_lookup = {
-        "fatigue_carbon_steel": "agrawal_nims_fatigue.parquet",
-        "pipe_hsla": "hsla_synthetic.parquet",
-    }
-    fname = parquet_lookup.get(steel_class)
-    if fname:
-        ppath = PROJECT_ROOT / "data" / fname
-        if ppath.exists():
-            df = pd.read_parquet(ppath)
-            if target in df.columns:
-                target_distribution = {
-                    "min": float(df[target].min()),
-                    "max": float(df[target].max()),
-                    "mean": float(df[target].mean()),
-                    "std": float(df[target].std()),
-                    "n": int(len(df)),
+    df = _load_class_dataset(steel_class)
+    if df is not None and target in df.columns:
+        target_distribution = {
+            "min": float(df[target].min()),
+            "max": float(df[target].max()),
+            "mean": float(df[target].mean()),
+            "std": float(df[target].std()),
+            "n": int(len(df)),
+        }
+        missing = [f for f in meta["feature_list"] if f not in df.columns]
+        if missing:
+            logger.warning(
+                "model expects features absent from dataset (%d missing); "
+                "skipping sample_predictions: %s", len(missing), missing[:5]
+            )
+        else:
+            feat = meta["feature_list"]
+            sample = df[feat + [target]].sample(
+                n=min(5, len(df)), random_state=42,
+            )
+            X = sample[feat]
+            q_correction = meta.get("conformal_correction_mpa", 0.0)
+            preds = bundle["main"].predict(X)
+            lo = bundle["q05"].predict(X) - q_correction
+            hi = bundle["q95"].predict(X) + q_correction
+            sample_predictions = [
+                {
+                    "actual": float(sample[target].iloc[i]),
+                    "pred": float(preds[i]),
+                    "lower_90": float(lo[i]),
+                    "upper_90": float(hi[i]),
                 }
-                feat_in_df = [f for f in meta["feature_list"] if f in df.columns]
-                sample = df[feat_in_df + [target]].sample(
-                    n=min(5, len(df)), random_state=42,
-                )
-                X = sample[feat_in_df]
-                preds = bundle["main"].predict(X)
-                lo = bundle["q05"].predict(X) - meta.get("conformal_correction_mpa", 0.0)
-                hi = bundle["q95"].predict(X) + meta.get("conformal_correction_mpa", 0.0)
-                sample_predictions = [
-                    {
-                        "actual": float(sample[target].iloc[i]),
-                        "pred": float(preds[i]),
-                        "lower_90": float(lo[i]),
-                        "upper_90": float(hi[i]),
-                    }
-                    for i in range(len(sample))
-                ]
+                for i in range(len(sample))
+            ]
 
     return {
         "model_version": model_version,

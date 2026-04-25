@@ -223,3 +223,23 @@ def test_pattern_d07_uses_ctx_bounds_en10083():
     warnings = run_all_patterns(ctx, phase=Phase.PREPROCESSING)
     ids = {w["pattern_id"] for w in warnings}
     assert "D07" in ids
+
+
+def test_dataset_for_each_class_contains_full_feature_set():
+    """Regression: build_context for HSLA crashed because raw parquet
+    lacked engineered features (cev_iiw, pcm, ...). The dataset returned
+    via the registry must be feature-engineered to match what models
+    actually train on, otherwise inference at sample-prediction time
+    raises a feature_names mismatch.
+    """
+    for class_id in AVAILABLE_CLASS_IDS:
+        profile = load_steel_class(class_id)
+        gen = get_synthetic_generator(profile.synthetic_generator_name)
+        df_raw = gen()
+        df_feat = compute_features_for_class(df_raw, class_id)
+
+        missing = [f for f in profile.feature_set if f not in df_feat.columns]
+        assert not missing, (
+            f"class {class_id}: feature_set missing from dataset after "
+            f"feature engineering: {missing}"
+        )
