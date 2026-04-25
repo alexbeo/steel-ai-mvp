@@ -164,11 +164,14 @@ def main():
     print(f"Hypotheses for {model_version}")
     print("=" * 70)
     for i, h in enumerate(hypotheses, 1):
-        print(f"\n[{i}/{len(hypotheses)}] [{h.novelty}] {h.statement}")
+        print(f"\n[{i}/{len(hypotheses)}] [novelty={h.novelty}, cost={h.experiment_cost_estimate}] {h.statement}")
         print(f"  Rationale: {h.rationale}")
-        print(f"  Experiment: fix {h.proposed_experiment.get('fix')}, "
-              f"sweep {h.proposed_experiment.get('sweep')}")
+        print(f"  Experiment: fix {h.proposed_experiment.get('fix')}")
+        print(f"              sweep {h.proposed_experiment.get('sweep')}")
         print(f"  Expected: {h.expected_outcome}")
+        print(f"  Economic baseline: {h.economic_impact.vs_classical_baseline}")
+        print(f"  Estimated saving: {h.economic_impact.estimated_saving}")
+        print(f"  Measurement: {h.economic_impact.measurement_method}")
         print(f"  id={h.id}, tags={h.tags}")
 
 

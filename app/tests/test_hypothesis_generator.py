@@ -74,21 +74,31 @@ def _make_mock_response(hypotheses: list[dict]) -> MagicMock:
     return resp
 
 
+def _full_hypothesis_dict(**overrides):
+    base = {
+        "statement": "Carburizing presence dominates fatigue strength prediction.",
+        "rationale": "carburizing_temp_c importance 0.475 — by far the largest.",
+        "proposed_experiment": {
+            "fix": {"c_pct": 0.20, "mn_pct": 0.85},
+            "sweep": {"variable": "carburizing_temp_c",
+                      "range": [800, 950], "step": 25},
+        },
+        "expected_outcome": "Fatigue rises by ~150 МПа above 870 °C.",
+        "novelty": "MEDIUM",
+        "experiment_cost_estimate": "MEDIUM",
+        "economic_impact": {
+            "vs_classical_baseline": "Trial-and-error: 5-10 melts at €5-15k each",
+            "estimated_saving": "saves 4-6 melts (~€30-90k) per recipe iteration",
+            "measurement_method": "compare 6 melt pairs at fixed and swept carb temp",
+        },
+    }
+    base.update(overrides)
+    return base
+
+
 def test_generate_parses_well_formed_response(monkeypatch):
     mock_client = MagicMock()
-    mock_client.messages.create.return_value = _make_mock_response([
-        {
-            "statement": "Carburizing presence dominates fatigue strength prediction.",
-            "rationale": "carburizing_temp_c importance 0.475 — by far the largest.",
-            "proposed_experiment": {
-                "fix": {"c_pct": 0.20, "mn_pct": 0.85},
-                "sweep": {"variable": "carburizing_temp_c",
-                          "range": [800, 950], "step": 25},
-            },
-            "expected_outcome": "Fatigue rises by ~150 МПа above 870 °C.",
-            "novelty": "MEDIUM",
-        },
-    ])
+    mock_client.messages.create.return_value = _make_mock_response([_full_hypothesis_dict()])
 
     import app.backend.hypothesis_generator as mod
     monkeypatch.setattr(mod, "_log_usage", lambda *a, **kw: None)
@@ -106,6 +116,9 @@ def test_generate_parses_well_formed_response(monkeypatch):
     assert h.proposed_experiment["sweep"]["variable"] == "carburizing_temp_c"
     assert "steel_class:fatigue_carbon_steel" in h.tags
     assert len(h.id) == 8
+    assert h.experiment_cost_estimate == "MEDIUM"
+    assert h.economic_impact.vs_classical_baseline.startswith("Trial-and-error")
+    assert "€" in h.economic_impact.estimated_saving
 
 
 def test_generate_returns_empty_on_api_failure():
@@ -134,13 +147,7 @@ def test_generate_returns_empty_when_no_tool_block_in_response():
 def test_generate_skips_malformed_hypothesis_entries(monkeypatch):
     mock_client = MagicMock()
     mock_client.messages.create.return_value = _make_mock_response([
-        {
-            "statement": "good one",
-            "rationale": "reason",
-            "proposed_experiment": {"fix": {}, "sweep": {"variable": "x", "range": [0, 1]}},
-            "expected_outcome": "y",
-            "novelty": "LOW",
-        },
+        _full_hypothesis_dict(statement="good one"),
         {"statement": "missing fields"},
     ])
 

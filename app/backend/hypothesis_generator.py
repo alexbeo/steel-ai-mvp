@@ -40,6 +40,14 @@ from app.backend.prompt_loader import load_prompt
 logger = logging.getLogger(__name__)
 
 Novelty = Literal["LOW", "MEDIUM", "HIGH"]
+CostEstimate = Literal["LOW", "MEDIUM", "HIGH"]
+
+
+@dataclass
+class EconomicImpact:
+    vs_classical_baseline: str
+    estimated_saving: str
+    measurement_method: str
 
 
 @dataclass
@@ -50,6 +58,8 @@ class Hypothesis:
     proposed_experiment: dict[str, Any]
     expected_outcome: str
     novelty: Novelty
+    experiment_cost_estimate: CostEstimate
+    economic_impact: EconomicImpact
     tags: list[str] = field(default_factory=list)
 
 
@@ -98,11 +108,29 @@ _TOOL_SCHEMA = {
                             "type": "string",
                             "enum": ["LOW", "MEDIUM", "HIGH"],
                         },
+                        "experiment_cost_estimate": {
+                            "type": "string",
+                            "enum": ["LOW", "MEDIUM", "HIGH"],
+                        },
+                        "economic_impact": {
+                            "type": "object",
+                            "properties": {
+                                "vs_classical_baseline": {"type": "string"},
+                                "estimated_saving": {"type": "string"},
+                                "measurement_method": {"type": "string"},
+                            },
+                            "required": [
+                                "vs_classical_baseline",
+                                "estimated_saving",
+                                "measurement_method",
+                            ],
+                        },
                     },
                     "required": [
                         "statement", "rationale",
                         "proposed_experiment",
                         "expected_outcome", "novelty",
+                        "experiment_cost_estimate", "economic_impact",
                     ],
                 },
                 "minItems": 0,
@@ -205,6 +233,12 @@ class HypothesisGenerator:
                     proposed_experiment=h["proposed_experiment"],
                     expected_outcome=h["expected_outcome"],
                     novelty=h["novelty"],
+                    experiment_cost_estimate=h["experiment_cost_estimate"],
+                    economic_impact=EconomicImpact(
+                        vs_classical_baseline=h["economic_impact"]["vs_classical_baseline"],
+                        estimated_saving=h["economic_impact"]["estimated_saving"],
+                        measurement_method=h["economic_impact"]["measurement_method"],
+                    ),
                     tags=[
                         f"steel_class:{context.get('steel_class', 'unknown')}",
                         f"target:{context.get('target', 'unknown')}",
