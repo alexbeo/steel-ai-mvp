@@ -42,6 +42,8 @@ Thumbs.db
 *.pem
 data/public_matminer.parquet
 data/public_matminer_stats.json
+prompts/*.md
+!prompts/README.md
 data/public_raw/
 data/agrawal_nims_fatigue.parquet
 data/mpea_dataset.parquet
