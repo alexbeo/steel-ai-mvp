@@ -966,16 +966,16 @@ with tab_hyp:
             usage = run.get("context", {}).get("usage", {})
             cols = st.columns(4)
             cols[0].metric("Гипотез", len(run["context"].get("hypotheses", [])))
-            cols[1].metric("Latency, s", f"{usage.get('latency_s', 0):.1f}")
+            cols[1].metric("Время отклика, с", f"{usage.get('latency_s', 0):.1f}")
             cols[2].metric(
-                "Tokens out",
+                "Токены на выходе",
                 int(usage.get("output_tokens", 0)),
             )
             cache_hit = usage.get("cache_read", 0)
             cols[3].metric(
-                "Cache hit",
+                "Кэш попадание",
                 "✓" if cache_hit > 100 else "—",
-                help=f"cache_read={cache_hit} tokens",
+                help=f"cache_read={cache_hit} токенов",
             )
 
             novelty_color = {
@@ -983,7 +983,13 @@ with tab_hyp:
                 "MEDIUM": "#f17105",
                 "LOW": "#558ccc",
             }
+            novelty_label = {
+                "HIGH": "ВЫСОКАЯ", "MEDIUM": "СРЕДНЯЯ", "LOW": "НИЗКАЯ",
+            }
             cost_emoji = {"LOW": "🟢", "MEDIUM": "🟡", "HIGH": "🔴"}
+            cost_label = {
+                "LOW": "низкая", "MEDIUM": "средняя", "HIGH": "высокая",
+            }
 
             for i, h in enumerate(run["context"]["hypotheses"], start=1):
                 novelty = h.get("novelty", "?")
@@ -998,9 +1004,11 @@ with tab_hyp:
                         f"<div style='text-align:right'>"
                         f"<span style='background:{color};color:white;"
                         f"padding:3px 8px;border-radius:4px;"
-                        f"font-size:0.85em'>novelty: {novelty}</span><br>"
+                        f"font-size:0.85em'>новизна: "
+                        f"{novelty_label.get(novelty, novelty)}</span><br>"
                         f"<span style='font-size:0.85em'>"
-                        f"{cost_emoji.get(cost, '⚪')} cost: {cost}</span>"
+                        f"{cost_emoji.get(cost, '⚪')} стоимость: "
+                        f"{cost_label.get(cost, cost)}</span>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -1013,23 +1021,26 @@ with tab_hyp:
                     fc, sc = st.columns(2)
                     fc.markdown("Зафиксировать:")
                     fc.json(fix)
-                    sc.markdown("Свипировать:")
+                    sc.markdown("Варьировать:")
                     sc.json(sweep)
 
                     st.markdown(
-                        f"**Ожидаемый исход.** {h.get('expected_outcome', '—')}"
+                        f"**Ожидаемый результат.** {h.get('expected_outcome', '—')}"
                     )
 
                     ei = h.get("economic_impact", {})
                     st.markdown("**Экономический эффект.**")
                     st.markdown(
-                        f"- _vs_ классика: {ei.get('vs_classical_baseline', '—')}\n"
-                        f"- Оценка экономии: **{ei.get('estimated_saving', '—')}**\n"
-                        f"- Метод проверки: {ei.get('measurement_method', '—')}"
+                        f"- Сравнение с классикой: "
+                        f"{ei.get('vs_classical_baseline', '—')}\n"
+                        f"- Оценка экономии: "
+                        f"**{ei.get('estimated_saving', '—')}**\n"
+                        f"- Метод проверки: "
+                        f"{ei.get('measurement_method', '—')}"
                     )
 
                     st.caption(
-                        f"id={h.get('id', '?')} · tags: "
+                        f"id={h.get('id', '?')} · теги: "
                         f"{', '.join(h.get('tags', []))}"
                     )
 
