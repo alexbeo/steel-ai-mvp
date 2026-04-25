@@ -1,7 +1,7 @@
 ---
 title: Property+Cost optimization showcase — что есть, что не видно, что развить
 date: 2026-04-25
-status: open
+status: in-progress  (EC.1 выполнено, EC.2 / EC.3 — backlog)
 ---
 
 ## Контекст
@@ -34,7 +34,7 @@ status: open
 
 ## Предлагаемое развитие — три уровня
 
-### Уровень EC.1 — быстрая демонстрация (~30 мин)
+### Уровень EC.1 — быстрая демонстрация (DONE)
 
 **Standalone скрипт** `scripts/show_property_cost_on_agrawal.py`. Берёт обученную Agrawal-модель, определяет baseline как медиану training data (или sub-class median для carbon_low_alloy), запускает NSGA-II через pymoo с двумя целями:
 - максимизировать predicted fatigue_strength_mpa
@@ -42,9 +42,44 @@ status: open
 
 Над композиционным пространством из 9 элементов + 3-4 ключевых процесс-параметра, в bounds из `meta.json.training_ranges`.
 
-Output — таблица «Топ-5 AI-предложений vs baseline» с колонками: Δfatigue (+МПа), Δcost (−€/т), что изменилось в составе, какой ferroalloy substitute. Сохраняется в `docs/property_cost_demo_<model>.md`.
+Output — таблица «Топ-5 AI-предложений vs baseline» с колонками: Δfatigue (+МПа), Δcost (−€/т), что изменилось в составе, какой ferroalloy substitute. Сохраняется в `docs/property_cost_demo_<model>.md` (gitignored).
 
 **Это закрывает «не видел нигде»** — даёт конкретные числа на Agrawal real-data модели, которые можно показать.
+
+### Реальные числа от первого запуска EC.1
+
+Модель: `fatigue_fatigue_strength_xgb_20260424_233914` (Agrawal NIMS 437 records, R²=0.978, conformal-coverage 0.92).
+
+**Baseline (медиана carbon_low_alloy sub-class из 338 records):**
+- Прогноз σf: **530 МПа** (90% CI [485, 559])
+- Стоимость ferroalloy: **452.66 €/т**
+- Состав: Si 0.26 / Mn 0.75 / Ni 0.06 / Cr 0.74 / Cu 0.06 / Mo 0.00
+
+**Топ-5 AI-предложений по `Δσf − Δcost`:**
+
+| # | Δσf, МПа | Δcost, €/т | Прогноз σf (90% CI) |
+|---|---:|---:|---:|
+| 1 | +181 | −28.00 | 712 [464, 989] |
+| 2 | +188 | −20.71 | 719 [470, 989] |
+| 3 | +189 | −19.85 | 719 [471, 989] |
+| 4 | +187 | −21.22 | 718 [464, 989] |
+| 5 | +183 | −25.61 | 713 [471, 989] |
+
+**Лучший candidate (#1):** Δσf = +181 МПа, Δcost = −28 €/т → **−2800 €/партия 100 т**.
+
+Что AI меняет (ranked by economic impact):
+- **Ni: 0.06 → 0.01 wt%** → −€19.84 экономия (FeNi с €12/кг — самый дорогой здесь)
+- **Mn: 0.75 → 0.38 wt%** → −€8.30 (FeMn-80, средняя цена)
+- **Cu: 0.06 → 0.01 wt%** → −€4.21
+- **Si: 0.26 → 0.37 wt%** → +€3.12 (доплата за раскисление)
+
+**Чистый сдвиг рецепта:** уменьшить дорогие легирующие (Ni/Cu) которые в этом диапазоне дают marginal hardenability boost; уменьшить избыточный Mn (промотирует MnS inclusions, вред для усталости); компенсировать дешёвым Si (solid-solution strengthening, raise hardenability via Si-effect on tempering).
+
+### Honest caveats
+
+- **CI на predicted 712 широкий** — [464, 989], размах 525 МПа. Это conformal-corrected calibrated interval, и он честно сигнализирует: AI вышел в редко-сэмплированный угол композиционного пространства, модель не уверена. В production-flow здесь должен сработать OOD-детектор и снизить confidence явно.
+- **Δcost учитывает только ferroalloy** (Mn, Si, Cr, Ni, Mo, Cu). Не входит: рабочее время, энергия, накладные. Реальная маржа на партии может отличаться в обе стороны.
+- **Baseline = sub-class median**, не «обычная заводская практика». При работе с реальным заводом нужно подавать их собственный recipe как baseline.
 
 ### Уровень EC.2 — UI integration (~1 день)
 

@@ -52,3 +52,6 @@ docs/agrawal_dataset_stats.json
 docs/mpea_dataset_stats.json
 docs/path2_agrawal_metrics.json
 docs/path2_mpea_metrics.json
+docs/a1_uplift_*.json
+docs/b1_formulas_*.json
+docs/property_cost_demo_*.md
