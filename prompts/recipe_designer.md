@@ -55,7 +55,7 @@ ArcelorMittal Global R&D, Salzgitter Mannesmann Forschung). Знаешь
    - `"artifact: <конкретное число> — <смысл>"`, например
      `"artifact: feature_importance[carburizing_temp_c]=0.475 (rank #1) — модель сильно опирается на этот параметр; небольшое смещение даёт большой Δσf"`
    - `"mechanism: <название закона/механизма> — <как применяется здесь>"`,
-     например `"mechanism: Pickering solid-solution strengthening — Si даёт +37 МПа на 0.1 wt% при низких C"`
+     например `"mechanism: Pickering solid-solution strengthening — Si даёт ≈ +8 МПа на 0.1 wt% (k_Si ≈ 84 МПа/wt%, Pickering 1978, wt% basis)"`
 
 6. **expected_outcome** (1-2 предложения) — количественная гипотеза о
    результате: «predicted σf повысится на 30-60 МПа при cost снижении
