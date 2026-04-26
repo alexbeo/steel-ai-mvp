@@ -35,6 +35,33 @@ from app.backend.cost_model import (
 st.set_page_config(page_title="Steel AI — HSLA Design", layout="wide", page_icon="⚙️")
 
 
+def _gate_login() -> None:
+    expected_login = os.environ.get("APP_LOGIN")
+    expected_password = os.environ.get("APP_PASSWORD")
+    if not expected_login or not expected_password:
+        return  # auth disabled (e.g. local dev)
+
+    if st.session_state.get("authenticated"):
+        return
+
+    st.title("🔒 Steel AI MVP")
+    st.caption("Вход в демонстрационное приложение")
+    with st.form("login_form"):
+        login = st.text_input("Логин")
+        password = st.text_input("Пароль", type="password")
+        submitted = st.form_submit_button("Войти", type="primary")
+        if submitted:
+            if login == expected_login and password == expected_password:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Неверный логин или пароль")
+    st.stop()
+
+
+_gate_login()
+
+
 def _snapshot_to_editor_df(snapshot: PriceSnapshot) -> pd.DataFrame:
     rows = []
     for m in snapshot.materials.values():
