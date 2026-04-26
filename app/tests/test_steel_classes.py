@@ -31,7 +31,7 @@ def test_load_pipe_hsla_profile():
 def test_load_en10083_profile():
     p = load_steel_class("en10083_qt")
     assert p.id == "en10083_qt"
-    assert p.standard == "EN 10083-2"
+    assert p.standard.startswith("EN 10083-2")  # may include scope qualifier per R-006 B-3
     assert "tempering_temp" in p.feature_set
     assert "section_thickness_mm" in p.feature_set
     assert "nb_pct" not in p.feature_set
