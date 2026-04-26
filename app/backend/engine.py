@@ -419,11 +419,12 @@ class Orchestrator:
         if phase == "inverse_design":
             ctx.update({
                 "pareto_size": len(state.candidates),
+                "pareto_candidates": state.candidates,  # I04 Pcm + I05 Ms patterns need raw recipes
                 "objectives_normalized": result.output.get("objectives_normalized", False),
                 "n_objectives": result.output.get("n_objectives", 1),
                 "variable_bounds": result.output.get("variable_bounds", {}),
                 "training_variable_ranges": state.features.get("training_ranges", {}),
-                # Cost-optimization context (for C01-C04 patterns):
+                # Cost-optimization context (for C01-C05 patterns):
                 "price_snapshot_meta": _extract_snapshot_meta(state.user_request),
                 "snapshot_materials": _extract_snapshot_materials(state.user_request),
                 "design_required_elements": sorted(

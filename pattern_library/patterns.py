@@ -226,10 +226,12 @@ def _check_m05_feature_importance_sanity(ctx: dict) -> CheckResult:
     if not expected:
         if ctx.get("steel_class", "") != "pipe_hsla":
             return CheckResult(False)
+        # Sync with data/steel_classes/pipe_hsla.yaml (R-006 finding B-1).
+        # Earlier draft listed `cen`; YAML uses `microalloying_sum`.
         expected = {
             "c_pct", "mn_pct", "nb_pct", "ti_pct", "v_pct",
             "rolling_finish_temp", "cooling_rate_c_per_s",
-            "cev_iiw", "pcm", "cen",
+            "cev_iiw", "pcm", "microalloying_sum",
         }
 
     top_features = sorted(importance.items(), key=lambda x: -x[1])[:5]
@@ -335,6 +337,108 @@ def _check_i02_normalized_objectives(ctx: dict) -> CheckResult:
     return CheckResult(False)
 
 
+def _pcm_from_recipe(rec: dict) -> float:
+    """Pcm Ito-Bessyo 1969: C + Si/30 + (Mn+Cu+Cr)/20 + Ni/60 + Mo/15 + V/10 + 5*B."""
+    g = lambda k: float(rec.get(k, 0.0) or 0.0)
+    return (
+        g("c_pct")
+        + g("si_pct") / 30
+        + (g("mn_pct") + g("cu_pct") + g("cr_pct")) / 20
+        + g("ni_pct") / 60
+        + g("mo_pct") / 15
+        + g("v_pct") / 10
+        + 5 * g("b_pct")
+    )
+
+
+def _andrews_ms_from_recipe(rec: dict) -> float:
+    """Andrews 1965: Ms[°C] = 539 − 423·C − 30.4·Mn − 17.7·Ni − 12.1·Cr − 7.5·Mo.
+
+    Verified 2026-04-26 via WebSearch — original Andrews has no Si term.
+    """
+    g = lambda k: float(rec.get(k, 0.0) or 0.0)
+    return (
+        539.0
+        - 423.0 * g("c_pct")
+        - 30.4 * g("mn_pct")
+        - 17.7 * g("ni_pct")
+        - 12.1 * g("cr_pct")
+        - 7.5 * g("mo_pct")
+    )
+
+
+def _check_i04_recipe_pcm_within_limit(ctx: dict) -> CheckResult:
+    """Inverse-design recipe Pcm must respect class weldability limit.
+
+    Limits per skill steel-domain-hsla-x-grade-phd VERIFIED block:
+    - Standard service: 0.22 (API 5L PSL2 / AWS D1.1)
+    - Sour service: 0.18 (NACE MR0175 / ISO 15156)
+    - Arctic: 0.24
+
+    Default threshold 0.22 (HSLA standard); user/class profile can override
+    via ctx["pcm_limit"]. R-006 finding D-2.
+    """
+    recipes = ctx.get("pareto_candidates") or []
+    if not recipes:
+        return CheckResult(False)
+    limit = float(ctx.get("pcm_limit", 0.22))
+    violations = []
+    for i, rec in enumerate(recipes):
+        comp = rec.get("composition") or rec
+        pcm_val = _pcm_from_recipe(comp)
+        if pcm_val > limit:
+            violations.append(f"#{i}: Pcm = {pcm_val:.3f}")
+    if violations:
+        return CheckResult(
+            True,
+            message=(
+                f"Pareto candidates с Pcm > {limit:.2f} (limit per service grade): "
+                + "; ".join(violations[:5])
+                + (f" и ещё {len(violations) - 5}" if len(violations) > 5 else "")
+                + ". Эти рецепты unweldable без preheat — отфильтровать или "
+                f"скорректировать состав (снизить Mn/C/Cr)."
+            ),
+            details={"violations_count": len(violations), "limit": limit},
+        )
+    return CheckResult(False)
+
+
+def _check_i05_andrews_ms_above_threshold(ctx: dict) -> CheckResult:
+    """Andrews Ms must be above brittle-martensite threshold.
+
+    Skill steel-physical-metallurgist-phd VERIFIED block: Ms < 200 °C
+    typically gives retained austenite > 15%, brittle martensite — fail
+    fatigue / impact specs. R-006 finding D-3.
+
+    Threshold configurable via ctx["andrews_ms_min_c"]; default 200 °C.
+    Set to 0 to disable for classes where martensite is undesirable
+    (e.g. ferritic-pearlitic only).
+    """
+    recipes = ctx.get("pareto_candidates") or []
+    if not recipes:
+        return CheckResult(False)
+    threshold = float(ctx.get("andrews_ms_min_c", 200.0))
+    violations = []
+    for i, rec in enumerate(recipes):
+        comp = rec.get("composition") or rec
+        ms = _andrews_ms_from_recipe(comp)
+        if ms < threshold:
+            violations.append(f"#{i}: Ms = {ms:.0f}°C")
+    if violations:
+        return CheckResult(
+            True,
+            message=(
+                f"Pareto candidates с Andrews Ms < {threshold:.0f}°C "
+                f"(retained austenite >15% риск): "
+                + "; ".join(violations[:5])
+                + (f" и ещё {len(violations) - 5}" if len(violations) > 5 else "")
+                + ". Снизить C/Mn/Ni или явно выбрать non-martensitic режим."
+            ),
+            details={"violations_count": len(violations), "threshold_c": threshold},
+        )
+    return CheckResult(False)
+
+
 def _check_i03_empty_pareto(ctx: dict) -> CheckResult:
     pareto_size = ctx.get("pareto_size", None)
     if pareto_size is not None and pareto_size == 0:
@@ -425,6 +529,35 @@ def _check_c02_ferroalloy_content(ctx: dict) -> CheckResult:
             True,
             message="Физически невозможное содержание в ферросплаве: "
                     + "; ".join(violations),
+        )
+    return CheckResult(False)
+
+
+def _check_c05_element_content_sum(ctx: dict) -> CheckResult:
+    """Element content fractions in a material must sum to ~1.0 (incl. C, trace).
+
+    R-006 finding D-4: skill ferroalloy-market-analyst-senior says typical
+    sum is 0.95-1.10 (≥1 because of C in HC FeMn or trace impurities).
+    Sum outside [0.90, 1.15] indicates data-entry error in the YAML snapshot.
+    """
+    materials = ctx.get("snapshot_materials") or []
+    violations = []
+    for m in materials:
+        ec = m.get("element_content") or {}
+        if not ec:
+            continue
+        total = sum(float(v) for v in ec.values())
+        if total < 0.90 or total > 1.15:
+            violations.append(f"{m['id']}: Σelement_content = {total:.3f}")
+    if violations:
+        return CheckResult(
+            True,
+            message=(
+                "element_content сумма вне [0.90, 1.15] (типично 0.95-1.10): "
+                + "; ".join(violations)
+                + ". Возможна ошибка в YAML."
+            ),
+            details={"violations": violations},
         )
     return CheckResult(False)
 
@@ -663,6 +796,24 @@ PATTERNS: list[Pattern] = [
         suggestion="Ослабить constraints, расширить bounds, увеличить population size/generations.",
     ),
     Pattern(
+        id="I04",
+        title="Recipe Pcm превышает weldability limit",
+        phase=Phase.INVERSE_DESIGN,
+        severity=Severity.HIGH,
+        description="Pareto candidate имеет Pcm > limit (default 0.22 standard, 0.18 sour)",
+        check=_check_i04_recipe_pcm_within_limit,
+        suggestion="Снизить Mn/C/Cr в рецепте. Для sour service ужесточить limit до 0.18.",
+    ),
+    Pattern(
+        id="I05",
+        title="Andrews Ms < threshold (retained austenite risk)",
+        phase=Phase.INVERSE_DESIGN,
+        severity=Severity.HIGH,
+        description="Pareto candidate даёт Ms < 200°C — retained austenite > 15%",
+        check=_check_i05_andrews_ms_above_threshold,
+        suggestion="Снизить hardenability (C/Mn/Ni) или явно выбрать non-martensitic режим.",
+    ),
+    Pattern(
         id="V01",
         title="Validation без tenant config",
         phase=Phase.VALIDATION,
@@ -691,6 +842,13 @@ PATTERNS: list[Pattern] = [
         description="В contributions есть отрицательный вклад или масса > 1000 кг/т",
         check=_check_c03_corrupt_breakdown,
         suggestion="Баг в compute_cost или в парсинге snapshot.",
+    ),
+    Pattern(
+        id="C05", title="element_content sum вне 0.90-1.15",
+        phase=Phase.INVERSE_DESIGN, severity=Severity.MEDIUM,
+        description="Сумма element_content material'а вне физического диапазона",
+        check=_check_c05_element_content_sum,
+        suggestion="Проверить YAML: типичный diapason 0.95-1.10 (≥1 от C/трейс импурити).",
     ),
     Pattern(
         id="C04", title="Элемент не покрыт прайс-снимком",
