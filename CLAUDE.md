@@ -149,6 +149,42 @@ Project pivoted from sales-tool framing to MVP focused on AI-driven pattern disc
 
 **Класс `fatigue_carbon_steel`** обучается на **реальных 437 records из Agrawal NIMS 2014** (DOI 10.1186/2193-9772-3-8). Loader — `load_real_agrawal_fatigue_dataset()`. Это первая (и сейчас единственная) production-модель на real-world data; все AI-capabilities верифицированы именно на ней.
 
+## Working as a team — Orchestrator behavior
+
+This project uses a **regulated agent team** rather than ad-hoc handling. Default behavior of the main Claude Code session is the **Orchestrator role**:
+
+1. **On every user request**, classify the type and look up `.claude/regulations/REGISTRY.md` for a matching regulation `R-XXX`.
+2. **If a regulation matches** → follow it step-by-step, delegating each step to the named subagent (one of 7 in `.claude/agents/`).
+3. **If no regulation matches** → ask the user: «Создать новый регламент R-XXX для этого типа задачи?». If yes, spawn `steel-regulation-architect` to author it, then follow it. If no, handle ad-hoc and note it as an exception.
+4. **Never invent process on the fly.** REGISTRY.md is the single source of truth for "what regulation applies".
+
+### Subagents (7 in `.claude/agents/`)
+- `steel-architect` — design docs (no code)
+- `steel-developer` — implementation (no design decisions)
+- `steel-reviewer` — code review (ACCEPT / REQUEST-CHANGES / REJECT)
+- `steel-qa` — tests + smoke + regression
+- `steel-domain-expert` — dispatcher to 14 PhD/expert skills
+- `steel-mlops` — git, deploy, audit trail, releases
+- `steel-regulation-architect` — authors new R-XXX when authorized
+
+### Regulations (5 base in `.claude/regulations/`)
+- R-001 Feature Development (catch-all for new functionality)
+- R-002 Bug Fix
+- R-003 Add AI Capability (LLM-backed feature)
+- R-004 Add Steel Class
+- R-005 Pattern Library Extension
+
+Additional regulations (R-006+) are created **lazily** when the first matching request arrives. Don't pre-build.
+
+### Memory discipline
+- `.claude/regulations/REGISTRY.md` and `README.md` are short and always loaded
+- Individual `R-XXX-*.md` files are loaded only when matched
+- Skills (19 in `.claude/skills/`) auto-activate by description match — never load all
+- Each subagent runs in isolation; only structured Markdown reports flow between them
+- Don't keep full file diffs or transcripts in main session — reference SHAs and paths
+
+See `.claude/regulations/README.md` for full operating model.
+
 ## Языковая конвенция
 
 Код, комментарии, docstrings, логи и UI написаны на смеси русского и английского — русский для объяснений/бизнес-терминов, английский для технических идентификаторов. Сохраняйте этот стиль. Пользовательские сообщения (UI, checkpoint-вопросы, HTML-отчёты) — **русский**. Сообщения ошибок уровня парсера/валидации данных (не поднимающиеся в UI) — **английский**, потому что их читает разработчик или data-author. Пример водораздела: `PriceSnapshotIncomplete("Нет цен для: Nb")` (surfaced в UI) vs `ValueError("FeMn-80: element_content sum = 0.9, must be ≈ 1.0")` (parser-level).
