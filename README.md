@@ -3,9 +3,8 @@ title: Steel AI MVP
 emoji: 🔥
 colorFrom: red
 colorTo: indigo
-sdk: streamlit
-sdk_version: 1.56.0
-app_file: app/frontend/app.py
+sdk: docker
+app_port: 7860
 pinned: false
 license: mit
 short_description: Подбор состава стали + раскисление + диагностика рецептов через глубокую нейронную сеть
