@@ -56,7 +56,11 @@ THERMO_MODELS: dict[str, ThermoModel] = {
         id="hayashi_2013",
         name="Hayashi-Yamamoto 2013",
         citation="Hayashi M., Yamamoto T., ISIJ Intl. 53, 2013",
-        log_k=lambda T_K: -62780.0 / T_K + 19.18,
+        # Canonical Al-O equilibrium 2[Al]+3[O]=Al2O3 has log K(1873K) ≈ +13.0-13.6
+        # across Fruehan, Sigworth-Elliott, Seo 1998, Ishfaq-Pande 2024.
+        # Earlier draft had inverted signs (-62780/T+19.18) yielding -14.34 — wrong by
+        # ~28 orders of magnitude. Verified 2026-04-26 via WebSearch + R-006 audit.
+        log_k=lambda T_K: 62780.0 / T_K - 19.18,
         valid_t_range_k=(1823.0, 1973.0),
         expected_accuracy_ppm=20.0,
         al_al_correction=True,
