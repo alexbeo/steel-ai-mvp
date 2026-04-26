@@ -414,6 +414,7 @@ class Orchestrator:
                 "cv_strategy": result.output.get("cv_strategy", "unknown"),
                 "prediction_has_ci": result.output.get("has_uncertainty", False),
                 "ood_detector_configured": result.output.get("has_ood_detector", False),
+                "quantile_crossing_rate": result.output.get("quantile_crossing_rate"),
             })
         if phase == "inverse_design":
             ctx.update({

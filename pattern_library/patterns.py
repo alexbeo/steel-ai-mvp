@@ -259,6 +259,31 @@ def _check_m06_ood_detection(ctx: dict) -> CheckResult:
     return CheckResult(False)
 
 
+def _check_m10_quantile_crossing(ctx: dict) -> CheckResult:
+    """Detect q05 > q95 cases — produces nonsensical 'negative-width' CIs.
+
+    XGBoost trains q05 and q95 quantile regressors independently — nothing
+    enforces their ordering. Skill ml-research-uq-conformal-phd flags
+    crossing rate > 1% as untrustworthy UQ. R-006 audit finding D-1.
+    """
+    rate = ctx.get("quantile_crossing_rate")
+    if rate is None:
+        return CheckResult(False)
+    if rate > 0.01:
+        return CheckResult(
+            True,
+            message=(
+                f"Quantile crossing rate = {rate:.1%} (>1%): q05 > q95 для "
+                f"{rate * 100:.1f}% точек тестовой выборки. Prediction interval "
+                f"имеет 'отрицательную ширину' для этих точек — UQ ненадёжна. "
+                f"Применить quantile rearrangement (Chernozhukov 2010) или "
+                f"переобучить с меньшей complexity."
+            ),
+            details={"crossing_rate": rate, "threshold": 0.01},
+        )
+    return CheckResult(False)
+
+
 def _check_m07_grouped_cv(ctx: dict) -> CheckResult:
     cv_strategy = ctx.get("cv_strategy", "")
     has_groups = ctx.get("has_groups", False)
@@ -590,6 +615,16 @@ PATTERNS: list[Pattern] = [
         description="OOD detector не настроен",
         check=_check_m06_ood_detection,
         suggestion="Обучить Gaussian Mixture на training composition. Flag на > 3σ от clusters.",
+    ),
+    Pattern(
+        id="M10",
+        title="Quantile crossing — UQ нарушена",
+        phase=Phase.TRAINING,
+        severity=Severity.HIGH,
+        description="q05 > q95 для >1% тестовых точек — нонсенс negative-width CI",
+        check=_check_m10_quantile_crossing,
+        suggestion="Применить quantile rearrangement (Chernozhukov 2010) или "
+                   "снизить complexity модели. Не доверять CI этой модели.",
     ),
     Pattern(
         id="M07",

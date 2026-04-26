@@ -71,6 +71,38 @@ def test_conformal_widens_predicted_interval():
     np.testing.assert_allclose(out["upper_90"].values, raw_hi + q, atol=1e-6)
 
 
+def test_quantile_crossing_rate_metric_present_and_low():
+    """M10 (R-006 audit D-1): quantile crossing rate must be tracked in
+    TrainingMetrics and must be < 1% on healthy training. XGBoost q05 and q95
+    are independent — verifying they don't routinely cross is an integrity check."""
+    res = _small_hsla_training()
+    m = res["trained"].metrics
+    assert hasattr(m, "quantile_crossing_rate"), \
+        "TrainingMetrics must expose quantile_crossing_rate (M10 input)"
+    assert 0.0 <= m.quantile_crossing_rate <= 1.0
+    # On healthy synthetic HSLA, crossings should be rare (well under 1%).
+    assert m.quantile_crossing_rate < 0.01, (
+        f"Crossing rate = {m.quantile_crossing_rate:.1%} ≥ 1% on baseline "
+        f"synthetic HSLA — model has UQ integrity issue"
+    )
+
+
+def test_pattern_m10_triggers_on_high_crossing_rate():
+    """M10 pattern fires if crossing_rate > 1%, doesn't fire if ≤ 1%."""
+    from pattern_library.patterns import _check_m10_quantile_crossing
+    # No data → no trigger
+    assert not _check_m10_quantile_crossing({}).triggered
+    # Healthy: 0.5% < 1% threshold
+    assert not _check_m10_quantile_crossing({"quantile_crossing_rate": 0.005}).triggered
+    # Borderline: exactly 1% (strict >, not ≥) — no trigger
+    assert not _check_m10_quantile_crossing({"quantile_crossing_rate": 0.01}).triggered
+    # Triggers: 5% crossing
+    res = _check_m10_quantile_crossing({"quantile_crossing_rate": 0.05})
+    assert res.triggered
+    assert "5.0%" in res.message
+    assert res.details["crossing_rate"] == 0.05
+
+
 def test_predict_falls_back_to_raw_when_meta_lacks_correction():
     """Old model artifacts (before this change) have no conformal_correction_mpa —
     predict_with_uncertainty must still work, treating Q as 0."""

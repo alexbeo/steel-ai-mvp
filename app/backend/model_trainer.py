@@ -41,6 +41,7 @@ class TrainingMetrics:
     n_test: int
     coverage_90_ci_raw: float = 0.0
     conformal_correction_mpa: float = 0.0
+    quantile_crossing_rate: float = 0.0  # M10: q05 > q95 fraction on test
 
 
 @dataclass
@@ -188,6 +189,11 @@ def train_model(
     raw_upper = quantile_models["q95"].predict(X_test)
     raw_coverage = float(((y_test >= raw_lower) & (y_test <= raw_upper)).mean())
 
+    # M10: quantile crossing rate. Independently-trained q05 and q95 may
+    # produce q05 > q95 for some inputs — a "negative-width" interval.
+    # Skill ml-research-uq-conformal-phd flags >1% as untrustworthy UQ.
+    crossing_rate = float((raw_lower > raw_upper).mean())
+
     lower = raw_lower - conformal_correction
     upper = raw_upper + conformal_correction
     coverage = float(((y_test >= lower) & (y_test <= upper)).mean())
@@ -201,6 +207,7 @@ def train_model(
         coverage_90_ci=coverage,
         coverage_90_ci_raw=raw_coverage,
         conformal_correction_mpa=conformal_correction,
+        quantile_crossing_rate=crossing_rate,
         n_train=len(train_idx), n_val=len(val_idx), n_test=len(test_idx),
     )
     logger.info(
@@ -390,6 +397,7 @@ class ModelTrainerAgent:
                         "r2_test": trained.metrics.r2_test,
                         "mae_test": trained.metrics.mae_test,
                         "coverage_90_ci": trained.metrics.coverage_90_ci,
+                        "quantile_crossing_rate": trained.metrics.quantile_crossing_rate,
                         "feature_importance": trained.feature_importance,
                         "training_ranges": trained.training_ranges,
                         "has_uncertainty": True,
