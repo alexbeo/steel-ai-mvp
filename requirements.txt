@@ -16,18 +16,7 @@ pyyaml>=6.0
 
 # Web / UI
 streamlit>=1.28
-fastapi>=0.104
-uvicorn>=0.24
 
 # LLM agents (опционально — для Critic v2 с LLM-exploratory)
 anthropic>=0.18
 python-dotenv>=1.0
-
-# Public-data spike (опционально — scripts/fetch_public_steel_data.py)
-matminer>=0.10
-
-# Dev / tests
-pytest>=7.4
-pytest-cov>=4.1
-ruff>=0.1
-openpyxl>=3.1   # для чтения Agrawal NIMS xlsx
