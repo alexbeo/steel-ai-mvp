@@ -30,3 +30,4 @@ matminer>=0.10
 pytest>=7.4
 pytest-cov>=4.1
 ruff>=0.1
+openpyxl>=3.1   # для чтения Agrawal NIMS xlsx
