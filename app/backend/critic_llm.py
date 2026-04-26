@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, asdict
 from typing import Any, Literal
 
-from app.backend.prompt_loader import load_prompt
+from app.backend.prompt_loader import load_prompt_optional
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class LLMObservation:
     rationale: str
 
 
-_SYSTEM_PROMPT_TEXT = load_prompt("llm_critic")
+_SYSTEM_PROMPT_TEXT = load_prompt_optional("llm_critic")
 
 
 _TOOL_SCHEMA = {
@@ -184,6 +184,8 @@ def _log_usage(resp: Any, elapsed_s: float, observations: list[LLMObservation]) 
 
 def make_llm_critic() -> LLMCritic | None:
     """Return LLMCritic if ANTHROPIC_API_KEY is set, else None."""
+    if _SYSTEM_PROMPT_TEXT is None:
+        return None  # prompt missing on public clone
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:

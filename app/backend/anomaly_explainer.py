@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, asdict, field
 from typing import Any, Literal
 
-from app.backend.prompt_loader import load_prompt
+from app.backend.prompt_loader import load_prompt_optional
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class AnomalyExplanation:
     tags: list[str] = field(default_factory=list)
 
 
-_SYSTEM_PROMPT_TEXT = load_prompt("anomaly_explainer")
+_SYSTEM_PROMPT_TEXT = load_prompt_optional("anomaly_explainer")
 
 
 _TOOL_SCHEMA = {
@@ -231,6 +231,8 @@ def _log_usage(resp, elapsed_s, exp, ctx):
 
 
 def make_anomaly_explainer() -> AnomalyExplainer | None:
+    if _SYSTEM_PROMPT_TEXT is None:
+        return None  # prompt missing on public clone
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:

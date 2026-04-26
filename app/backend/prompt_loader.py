@@ -30,6 +30,19 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def load_prompt_optional(name: str) -> str | None:
+    """Same as load_prompt, but returns None when the file is absent.
+
+    Used at module-import time so backend modules don't crash on a
+    fresh clone (e.g. public Streamlit Cloud demo). The corresponding
+    make_*() factory must check for None and degrade gracefully.
+    """
+    try:
+        return load_prompt(name)
+    except PromptNotFoundError:
+        return None
+
+
 def reset_cache() -> None:
     """Clear the lru_cache — useful when editing prompts during dev."""
     load_prompt.cache_clear()
