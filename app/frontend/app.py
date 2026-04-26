@@ -1556,6 +1556,26 @@ with tab_hyp:
             )
         )
 
+        col_n, col_filter = st.columns([2, 3])
+        with col_n:
+            max_hyp = st.slider(
+                "Сколько идей сгенерировать (потолок)", 3, 15, 5,
+                help=(
+                    "Sonnet выдаст до этого числа гипотез, "
+                    "но остановится раньше, если идеи кончатся "
+                    "(во избежание filler'а)."
+                ),
+            )
+        with col_filter:
+            show_only_accept = st.checkbox(
+                "Показывать только ACCEPT от PhD-Critic",
+                value=True,
+                help=(
+                    "Если включено — REJECT/REVISE гипотезы скрыты. "
+                    "Это и есть ответ на вопрос «сколько реально интересных»."
+                ),
+            )
+
         run_btn = st.button(
             "🔮 Сгенерировать гипотезы и провести рецензию",
             type="primary",
@@ -1579,7 +1599,8 @@ with tab_hyp:
             else:
                 progress = st.progress(0, text="Подготовка контекста модели…")
                 ctx = build_context(selected_model)
-                progress.progress(15, text="Генератор формулирует гипотезы (~100 с)…")
+                ctx["max_hypotheses"] = max_hyp
+                progress.progress(15, text=f"Генератор формулирует до {max_hyp} гипотез (~100 с)…")
                 new_hypotheses = gen.generate(ctx)
                 if not new_hypotheses:
                     progress.empty()
@@ -1689,7 +1710,27 @@ with tab_hyp:
                 "HIGH": "высокая", "MEDIUM": "средняя", "LOW": "низкая",
             }
 
-            for i, h in enumerate(cycle_hyps, start=1):
+            visible_hyps = cycle_hyps
+            if show_only_accept:
+                visible_hyps = [
+                    h for h in cycle_hyps
+                    if cycle_reviews.get(h.get("hypothesis_id"), {}).get("verdict") == "ACCEPT"
+                ]
+                hidden = len(cycle_hyps) - len(visible_hyps)
+                if hidden:
+                    st.caption(
+                        f"Скрыто {hidden} гипотез с вердиктом REVISE/REJECT. "
+                        "Снимите галочку «только ACCEPT» чтобы увидеть все."
+                    )
+                if not visible_hyps:
+                    st.warning(
+                        "Ни одна из сгенерированных гипотез не получила "
+                        "ACCEPT от PhD-Critic — модель насыщенная или "
+                        "идеи требуют доработки. Снимите галочку чтобы "
+                        "увидеть REVISE/REJECT с обоснованиями."
+                    )
+
+            for i, h in enumerate(visible_hyps, start=1):
                 novelty = h.get("novelty", "?")
                 cost = h.get("experiment_cost_estimate", "?")
                 color = novelty_color.get(novelty, "#888")

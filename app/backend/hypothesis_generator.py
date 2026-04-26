@@ -148,6 +148,7 @@ def _build_user_payload(ctx: dict) -> str:
     top10 = dict(sorted(importance.items(), key=lambda kv: -kv[1])[:10])
 
     payload = {
+        "max_hypotheses": ctx.get("max_hypotheses", 5),
         "steel_class": ctx.get("steel_class"),
         "target": ctx.get("target"),
         "data_source": ctx.get("data_source"),
