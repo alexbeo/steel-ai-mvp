@@ -31,6 +31,14 @@ feature_set:
   - inclusion_area_defect_a
   - inclusion_area_defect_b
   - inclusion_area_defect_c
+# NOTE on 30°C minimums (R-006 audit finding B-2 disposition):
+#   through_hardening_temp_c, carburizing_temp_c, diffusion_temp_c,
+#   quenching_media_temp_c, tempering_temp_c use 30°C as a SENTINEL
+#   meaning "step NOT performed" in the source Agrawal NIMS dataset.
+#   Real austenite-domain treatments only happen above ~700°C (A1 ≈ 727°C).
+#   D07 accepts 30°C in-range intentionally — preserves "no-treatment"
+#   records. Inverse design recipes: I05 Andrews Ms gate handles
+#   tempering_temp_c=30 as no-op effectively.
 physical_bounds:
   c_pct: [0.17, 0.63]
   si_pct: [0.16, 2.05]
@@ -42,15 +50,15 @@ physical_bounds:
   cu_pct: [0.01, 0.26]
   mo_pct: [0.0, 0.24]
   normalizing_temp_c: [825.0, 930.0]
-  through_hardening_temp_c: [30.0, 865.0]
+  through_hardening_temp_c: [30.0, 865.0]   # 30 = sentinel "not performed"
   through_hardening_time_min: [0.0, 30.0]
   through_hardening_cooling_rate_c_per_s: [0.0, 24.0]
-  carburizing_temp_c: [30.0, 930.0]
+  carburizing_temp_c: [30.0, 930.0]         # 30 = sentinel "not carburized"
   carburizing_time_min: [0.0, 540.0]
-  diffusion_temp_c: [30.0, 903.3]
+  diffusion_temp_c: [30.0, 903.3]           # 30 = sentinel "no diffusion"
   diffusion_time_min: [0.0, 70.2]
-  quenching_media_temp_c: [30.0, 140.0]
-  tempering_temp_c: [30.0, 680.0]
+  quenching_media_temp_c: [30.0, 140.0]     # 30 = sentinel "no quench"
+  tempering_temp_c: [30.0, 680.0]           # 30 = sentinel "not tempered"
   tempering_time_min: [0.0, 120.0]
   tempering_cooling_rate_c_per_s: [0.0, 24.0]
   reduction_ratio: [240.0, 5530.0]
@@ -81,7 +89,7 @@ process_params:
   - tempering_cooling_rate_c_per_s
   - reduction_ratio
 synthetic_generator_name: fatigue_carbon_steel_real
-cost_seed_path: data/prices/seed_2026-04-23.yaml
+cost_seed_path: data/prices/seed_2026-04-26.yaml
 feature_engineering: passthrough
 target_o_activity_ppm: 15.0
 data_source: "Agrawal et al. 2014 — 437 real NIMS MatNavi fatigue records"

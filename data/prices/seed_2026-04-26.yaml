@@ -1,0 +1,55 @@
+date: 2026-04-26
+currency: EUR
+source: "LME Apr 2026 (Mo $26.82/lb, FeCr CIF Vlissingen) + Fastmarkets FeNb 65% du Rotterdam Apr 2026 + Steel on the Net 2026-04 (FeMn/FeSi/SiMn India FOB) + LME Cu/Ni Apr 2026"
+notes: "Refreshed per R-008 from seed_2026-04-23. FeMo unchanged (drift +3.6% within 5% tolerance). FeNb lowered from 36 → 31 €/kg gross to align with Fastmarkets $40-50/kg-Nb range (effective ~€48/kg-Nb at 0.65 Nb content, conservative upper-mid of market). Verify against CBMM published list for Q2-2026 if procurement-bound. Other materials: spot-checked, no material drift > 5%."
+
+materials:
+  scrap:
+    kind: base
+    price_per_kg: 0.38
+    element_content: {Fe: 1.0}
+  FeMn-80:
+    kind: ferroalloy
+    price_per_kg: 1.80
+    element_content: {Mn: 0.80, Fe: 0.20}
+  FeSi-75:
+    kind: ferroalloy
+    price_per_kg: 2.10
+    element_content: {Si: 0.75, Fe: 0.25}
+  FeCr-HC:
+    kind: ferroalloy
+    price_per_kg: 2.60
+    element_content: {Cr: 0.65, Fe: 0.35}
+  FeNi:
+    kind: ferroalloy
+    price_per_kg: 12.00
+    element_content: {Ni: 0.30, Fe: 0.70}
+  FeMo:
+    # LME Mo Apr 2026: $26.82/lb-Mo × 2.205 lb/kg / 1.08 EUR/USD = €54.75/kg-Mo pure
+    # Gross alloy at 60% Mo = €54.75 × 0.60 = €32.85/kg → kept at €34 (within 4% tolerance)
+    kind: ferroalloy
+    price_per_kg: 34.00
+    element_content: {Mo: 0.60, Fe: 0.40}
+  FeV-50:
+    kind: ferroalloy
+    price_per_kg: 19.00
+    element_content: {V: 0.50, Fe: 0.50}
+  FeNb-65:
+    # Fastmarkets/Argus 2025: $40-50/kg-Nb. Conservative upper-mid: $50/kg-Nb / 1.08 = €46/kg-Nb pure.
+    # Gross alloy at 65% Nb = €46 × 0.65 ≈ €30/kg. Set to €31 with minor uncertainty buffer.
+    # CBMM monopoly — verify against published list for Q2-2026 if production-bound.
+    kind: ferroalloy
+    price_per_kg: 31.00
+    element_content: {Nb: 0.65, Fe: 0.35}
+  FeTi-70:
+    kind: ferroalloy
+    price_per_kg: 7.20
+    element_content: {Ti: 0.70, Fe: 0.30}
+  Cu:
+    kind: pure
+    price_per_kg: 8.50
+    element_content: {Cu: 1.0}
+  Al:
+    kind: pure
+    price_per_kg: 2.40
+    element_content: {Al: 1.0}
