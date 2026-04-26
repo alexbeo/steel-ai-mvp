@@ -284,7 +284,7 @@ with tab_design:
         df_editor = _snapshot_to_editor_df(snap)
         edited = st.data_editor(
             df_editor, num_rows="dynamic", key="price_editor",
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "id": "ID",
                 "kind": st.column_config.SelectboxColumn(
@@ -409,7 +409,7 @@ with tab_design:
                 )
                 .interactive()
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
         st.subheader("Топ-5 кандидатов")
         
@@ -429,7 +429,7 @@ with tab_design:
                     non_zero = {k: v for k, v in comp.items() if v > 0.001}
                     st.dataframe(
                         pd.DataFrame([non_zero]).T.rename(columns={0: "%"}),
-                        use_container_width=True,
+                        width="stretch",
                     )
                 with cc2:
                     st.markdown("**Обработка**")
@@ -477,7 +477,7 @@ with tab_design:
                             f"Цена, {cb['currency']}/кг",
                             f"Вклад, {cb['currency']}/т", "Доля, %",
                         ]
-                        st.dataframe(df_bd, use_container_width=True, hide_index=True)
+                        st.dataframe(df_bd, width="stretch", hide_index=True)
                         st.download_button(
                             f"📋 Экспорт breakdown #{c['idx']} в CSV",
                             data=df_bd.to_csv(index=False).encode("utf-8"),
@@ -1186,7 +1186,7 @@ with tab_deox:
                 "O_a, ppm": round(r.o_a_expected_ppm, 1),
                 f"Цена, {r.currency}": round(r.cost_eur, 2),
             } for r in cmp_results])
-            st.dataframe(df_cmp, hide_index=True, use_container_width=True)
+            st.dataframe(df_cmp, hide_index=True, width="stretch")
 
             masses = [r.al_total_kg for r in cmp_results]
             spread_pct = (max(masses) - min(masses)) / (sum(masses) / 3.0) * 100
@@ -1204,7 +1204,7 @@ with tab_deox:
                 x="Модель:N", y="Al, кг:Q",
                 color=alt.Color("Модель:N", legend=None),
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
     # ──────── AI Advisor + PhD Critic ────────
     with sub_ai:
@@ -2197,7 +2197,7 @@ with tab_recipe:
                         with st.expander("Расход ферросплавов в рецепте"):
                             st.dataframe(
                                 ml["ferroalloy_breakdown"],
-                                use_container_width=True,
+                                width="stretch",
                             )
 
                     st.caption(f"id={r.get('id', '?')}")
@@ -2476,7 +2476,7 @@ with tab_al:
                                 }
                                 for k, v in p["composition"].items()
                             ],
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                         )
                     cc2.markdown("**Process vs baseline**")
                     if p.get("process_params"):
@@ -2485,7 +2485,7 @@ with tab_al:
                                 {"параметр": k, "значение": round(v, 1)}
                                 for k, v in p["process_params"].items()
                             ],
-                            use_container_width=True, hide_index=True,
+                            width="stretch", hide_index=True,
                         )
 
                     st.caption(f"id={p.get('id', '?')}")
