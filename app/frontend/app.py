@@ -265,271 +265,271 @@ with tab_design:
             f"на v2 (требует расширения NSGA-II под process-параметры "
             f"и переработку variable_bounds логики)."
         )
-        st.stop()
+    else:
 
-    col1, col2 = st.columns(2)
+        col1, col2 = st.columns(2)
     
-    with col1:
-        st.subheader("Целевые свойства")
-        yt_min = st.number_input("σт минимум, МПа", 380, 800, 485, step=5)
-        yt_max = st.number_input("σт максимум, МПа", 400, 900, 580, step=5)
+        with col1:
+            st.subheader("Целевые свойства")
+            yt_min = st.number_input("σт минимум, МПа", 380, 800, 485, step=5)
+            yt_max = st.number_input("σт максимум, МПа", 400, 900, 580, step=5)
     
-    with col2:
-        st.subheader("Ограничения")
-        cev_max = st.number_input("CEV(IIW) максимум", 0.30, 0.60, 0.43, step=0.01)
-        pcm_max = st.number_input("Pcm максимум", 0.15, 0.35, 0.22, step=0.01)
+        with col2:
+            st.subheader("Ограничения")
+            cev_max = st.number_input("CEV(IIW) максимум", 0.30, 0.60, 0.43, step=0.01)
+            pcm_max = st.number_input("Pcm максимум", 0.15, 0.35, 0.22, step=0.01)
     
-    with st.expander("Дополнительные параметры NSGA-II"):
-        c1, c2 = st.columns(2)
-        pop_size = c1.slider("Population size", 30, 200, 80)
-        n_gen = c2.slider("Generations", 20, 200, 60)
+        with st.expander("Дополнительные параметры NSGA-II"):
+            c1, c2 = st.columns(2)
+            pop_size = c1.slider("Population size", 30, 200, 80)
+            n_gen = c2.slider("Generations", 20, 200, 60)
     
-    st.divider()
-    with st.expander("💰 Прайс материалов", expanded=True):
-        if "price_snapshot" not in st.session_state:
-            st.session_state["price_snapshot"] = seed_snapshot()
+        st.divider()
+        with st.expander("💰 Прайс материалов", expanded=True):
+            if "price_snapshot" not in st.session_state:
+                st.session_state["price_snapshot"] = seed_snapshot()
 
-        snap: PriceSnapshot = st.session_state["price_snapshot"]
+            snap: PriceSnapshot = st.session_state["price_snapshot"]
 
-        cols = st.columns([2, 1, 1, 1])
-        use_cost = cols[0].checkbox(
-            "Учитывать стоимость в оптимизации", value=True, key="use_cost"
-        )
-        cols[1].metric("Валюта", snap.currency)
-        cols[2].metric("Дата", snap.date.isoformat())
-        cost_mode = cols[3].radio(
-            "Режим cost", ["full", "incremental"],
-            horizontal=False, key="cost_mode"
-        )
-
-        uploaded = st.file_uploader("⬆ Загрузить YAML-прайс", type=["yaml", "yml"])
-        if uploaded is not None:
-            import tempfile
-            with tempfile.NamedTemporaryFile(
-                suffix=".yaml", delete=False,
-            ) as tmp_file:
-                tmp_file.write(uploaded.read())
-                tmp_path = Path(tmp_file.name)
-            try:
-                st.session_state["price_snapshot"] = load_snapshot(tmp_path)
-                st.success(f"Загружено: {uploaded.name}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Не удалось загрузить: {e}")
-            finally:
-                tmp_path.unlink(missing_ok=True)
-
-        df_editor = _snapshot_to_editor_df(snap)
-        edited = st.data_editor(
-            df_editor, num_rows="dynamic", key="price_editor",
-            width="stretch",
-            column_config={
-                "id": "ID",
-                "kind": st.column_config.SelectboxColumn(
-                    "kind", options=["base", "ferroalloy", "pure"]
-                ),
-                "price_per_kg": st.column_config.NumberColumn(
-                    f"{snap.currency}/кг", min_value=0.0
-                ),
-                "element_content": "element_content (Mn=0.80;Fe=0.20)",
-            },
-        )
-
-        # Persist edits back into snapshot so they're used on run.
-        try:
-            st.session_state["price_snapshot"] = _editor_df_to_snapshot(
-                edited, snap.date, snap.currency, source="manual"
+            cols = st.columns([2, 1, 1, 1])
+            use_cost = cols[0].checkbox(
+                "Учитывать стоимость в оптимизации", value=True, key="use_cost"
             )
-        except Exception as e:
-            st.error(f"Ошибка парсинга прайса: {e}")
-
-        # Download button
-        snap_now = st.session_state["price_snapshot"]
-        snap_yaml = yaml.safe_dump({
-            "date": snap_now.date.isoformat(),
-            "currency": snap_now.currency,
-            "source": "manual",
-            "materials": {
-                mid: {
-                    "kind": m.kind,
-                    "price_per_kg": m.price_per_kg,
-                    "element_content": dict(m.element_content),
-                }
-                for mid, m in snap_now.materials.items()
-            },
-        }, sort_keys=False, allow_unicode=True)
-        st.download_button(
-            "💾 Скачать текущий прайс как YAML",
-            data=snap_yaml,
-            file_name=f"prices_{snap.date.isoformat()}.yaml",
-        )
-
-    if st.button("🚀 Запустить дизайн", type="primary", disabled=not selected_model):
-        if not selected_model:
-            st.error("Сначала обучите модель")
-        else:
-            snapshot = (
-                st.session_state.get("price_snapshot")
-                if st.session_state.get("use_cost", True) else None
+            cols[1].metric("Валюта", snap.currency)
+            cols[2].metric("Дата", snap.date.isoformat())
+            cost_mode = cols[3].radio(
+                "Режим cost", ["full", "incremental"],
+                horizontal=False, key="cost_mode"
             )
-            mode = st.session_state.get("cost_mode", "full")
 
-            with st.spinner("NSGA-II оптимизация..."):
-                from app.backend.inverse_designer import run_inverse_design
-                from app.backend.validator import validate_batch
-
+            uploaded = st.file_uploader("⬆ Загрузить YAML-прайс", type=["yaml", "yml"])
+            if uploaded is not None:
+                import tempfile
+                with tempfile.NamedTemporaryFile(
+                    suffix=".yaml", delete=False,
+                ) as tmp_file:
+                    tmp_file.write(uploaded.read())
+                    tmp_path = Path(tmp_file.name)
                 try:
-                    result = run_inverse_design(
-                        model_version=selected_model,
-                        targets={"yield_strength_mpa": {"min": yt_min, "max": yt_max}},
-                        hard_constraints={"cev_iiw": {"max": cev_max}, "pcm": {"max": pcm_max}},
-                        population_size=pop_size,
-                        n_generations=n_gen,
-                        price_snapshot=snapshot,
-                        cost_mode=mode,
-                    )
-                except PriceSnapshotIncomplete as e:
-                    st.error(
-                        f"❌ В прайсе нет цен для: **{', '.join(e.missing)}**. "
-                        f"Добавьте строки в таблицу «Прайс материалов» и повторите запуск."
-                    )
-                    st.stop()
+                    st.session_state["price_snapshot"] = load_snapshot(tmp_path)
+                    st.success(f"Загружено: {uploaded.name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Не удалось загрузить: {e}")
+                finally:
+                    tmp_path.unlink(missing_ok=True)
 
-                val_result = validate_batch(result["pareto_candidates"])
-                st.session_state["last_design"] = {
-                    "inverse": result,
-                    "validation": val_result,
-                }
-    
-    # Отображение результата
-    if "last_design" in st.session_state:
-        d = st.session_state["last_design"]
-        inverse = d["inverse"]
-        validation = d["validation"]
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Найдено кандидатов", inverse["n_candidates"])
-        c2.metric("Прошли валидацию", len(validation["approved"]))
-        c3.metric("Отсеяно", len(validation["rejected"]))
-        c4.metric("С warnings", sum(1 for c in validation["approved"] if c.get("validation", {}).get("overall") == "PASS_WITH_WARNINGS"))
-        
-        if validation["rejection_summary"]:
-            with st.expander("Причины отсева"):
-                for reason, count in validation["rejection_summary"].items():
-                    st.write(f"- **{reason}**: {count}")
-
-        # Pareto plot (σт × cost) — Task 12
-        candidates_for_plot = inverse["pareto_candidates"]
-        if candidates_for_plot:
-            df_pareto = pd.DataFrame([{
-                "idx": c["idx"],
-                "sigma_t": c["predicted"]["mean"],
-                "ci_half": c["predicted"]["ci_half_width"],
-                "cost": (c["cost"]["total_per_ton"] if c.get("cost")
-                         else c["objectives"]["alloying_cost"]),
-                "ood": "OOD" if c["predicted"]["ood_flag"] else "ok",
-            } for c in candidates_for_plot])
-
-            cost_currency = inverse.get("cost_currency", "EUR (legacy)")
-            st.subheader("Pareto front")
-            chart = (
-                alt.Chart(df_pareto)
-                .mark_circle(size=140)
-                .encode(
-                    x=alt.X("sigma_t:Q", title="σт, МПа"),
-                    y=alt.Y("cost:Q", title=f"Стоимость, {cost_currency}/т"),
-                    color=alt.Color(
-                        "ood:N",
-                        scale=alt.Scale(domain=["ok", "OOD"],
-                                        range=["#2ecc71", "#e67e22"]),
+            df_editor = _snapshot_to_editor_df(snap)
+            edited = st.data_editor(
+                df_editor, num_rows="dynamic", key="price_editor",
+                width="stretch",
+                column_config={
+                    "id": "ID",
+                    "kind": st.column_config.SelectboxColumn(
+                        "kind", options=["base", "ferroalloy", "pure"]
                     ),
-                    tooltip=["idx", "sigma_t", "ci_half", "cost", "ood"],
-                )
-                .interactive()
+                    "price_per_kg": st.column_config.NumberColumn(
+                        f"{snap.currency}/кг", min_value=0.0
+                    ),
+                    "element_content": "element_content (Mn=0.80;Fe=0.20)",
+                },
             )
-            st.altair_chart(chart, width="stretch")
 
-        st.subheader("Топ-5 кандидатов")
-        
-        top5 = validation["approved"][:5] if validation["approved"] else inverse["pareto_candidates"][:5]
-        for i, c in enumerate(top5, 1):
-            comp = c.get("composition", {})
-            derived = c.get("derived", {})
-            pred = c.get("predicted", {})
-            val = c.get("validation", {})
-            overall = val.get("overall", "PASS")
-            emoji = {"PASS": "✅", "PASS_WITH_WARNINGS": "⚠️", "FAIL": "❌"}.get(overall, "❔")
-            
-            with st.expander(f"{emoji} Кандидат #{i} — σт = {pred.get('mean', 0):.0f} ± {pred.get('ci_half_width', 0):.0f} МПа"):
-                cc1, cc2, cc3 = st.columns(3)
-                with cc1:
-                    st.markdown("**Химия (%)**")
-                    non_zero = {k: v for k, v in comp.items() if v > 0.001}
-                    st.dataframe(
-                        pd.DataFrame([non_zero]).T.rename(columns={0: "%"}),
-                        width="stretch",
-                    )
-                with cc2:
-                    st.markdown("**Обработка**")
-                    proc = c.get("processing", {})
-                    for k, v in proc.items():
-                        st.write(f"**{k}:** {v}")
-                    st.markdown("**Производные**")
-                    st.write(f"CEV = **{derived.get('cev_iiw', 0):.3f}**")
-                    st.write(f"Pcm = **{derived.get('pcm', 0):.3f}**")
-                    st.write(f"CEN = **{derived.get('cen', 0):.3f}**")
-                with cc3:
-                    st.markdown("**Прогноз**")
-                    st.metric("σт", f"{pred.get('mean', 0):.0f} МПа",
-                             f"±{pred.get('ci_half_width', 0):.0f} (90% CI)")
-                    st.write(f"Lower 90%: {pred.get('lower_90', 0):.0f}")
-                    st.write(f"Upper 90%: {pred.get('upper_90', 0):.0f}")
-                    st.write(f"OOD flag: {'⚠️ Да' if pred.get('ood_flag') else '✓ Нет'}")
-                    # Keep the legacy summary only when no cost breakdown is available
-                    if not c.get("cost"):
-                        st.markdown("**Стоимость (legacy)**")
-                        st.write(f"≈ {c.get('objectives', {}).get('alloying_cost', 0):.1f} €/т")
+            # Persist edits back into snapshot so they're used on run.
+            try:
+                st.session_state["price_snapshot"] = _editor_df_to_snapshot(
+                    edited, snap.date, snap.currency, source="manual"
+                )
+            except Exception as e:
+                st.error(f"Ошибка парсинга прайса: {e}")
 
-                if c.get("cost"):
-                    cb = c["cost"]
-                    st.markdown(
-                        f"**💰 Себестоимость:** "
-                        f"{cb['total_per_ton']:,.0f} {cb['currency']}/т "
-                        f"({cb['total_per_ton']/1000:,.2f} {cb['currency']}/кг, "
-                        f"{cb['mode']})"
-                    )
-                    df_bd = pd.DataFrame(cb["contributions"])
-                    if not df_bd.empty:
-                        df_bd["share_%"] = (
-                            df_bd["contribution_per_ton"] / cb["total_per_ton"] * 100
-                        ).round(1)
-                        df_bd = df_bd[[
-                            "material_id",
-                            "mass_kg_per_ton_steel",
-                            "price_per_kg",
-                            "contribution_per_ton",
-                            "share_%",
-                        ]]
-                        df_bd.columns = [
-                            "Материал", "Масса, кг/т",
-                            f"Цена, {cb['currency']}/кг",
-                            f"Вклад, {cb['currency']}/т", "Доля, %",
-                        ]
-                        st.dataframe(df_bd, width="stretch", hide_index=True)
-                        st.download_button(
-                            f"📋 Экспорт breakdown #{c['idx']} в CSV",
-                            data=df_bd.to_csv(index=False).encode("utf-8"),
-                            file_name=f"breakdown_candidate_{c['idx']}.csv",
-                            key=f"dl_bd_{c['idx']}",
+            # Download button
+            snap_now = st.session_state["price_snapshot"]
+            snap_yaml = yaml.safe_dump({
+                "date": snap_now.date.isoformat(),
+                "currency": snap_now.currency,
+                "source": "manual",
+                "materials": {
+                    mid: {
+                        "kind": m.kind,
+                        "price_per_kg": m.price_per_kg,
+                        "element_content": dict(m.element_content),
+                    }
+                    for mid, m in snap_now.materials.items()
+                },
+            }, sort_keys=False, allow_unicode=True)
+            st.download_button(
+                "💾 Скачать текущий прайс как YAML",
+                data=snap_yaml,
+                file_name=f"prices_{snap.date.isoformat()}.yaml",
+            )
+
+        if st.button("🚀 Запустить дизайн", type="primary", disabled=not selected_model):
+            if not selected_model:
+                st.error("Сначала обучите модель")
+            else:
+                snapshot = (
+                    st.session_state.get("price_snapshot")
+                    if st.session_state.get("use_cost", True) else None
+                )
+                mode = st.session_state.get("cost_mode", "full")
+
+                with st.spinner("NSGA-II оптимизация..."):
+                    from app.backend.inverse_designer import run_inverse_design
+                    from app.backend.validator import validate_batch
+
+                    try:
+                        result = run_inverse_design(
+                            model_version=selected_model,
+                            targets={"yield_strength_mpa": {"min": yt_min, "max": yt_max}},
+                            hard_constraints={"cev_iiw": {"max": cev_max}, "pcm": {"max": pcm_max}},
+                            population_size=pop_size,
+                            n_generations=n_gen,
+                            price_snapshot=snapshot,
+                            cost_mode=mode,
                         )
+                    except PriceSnapshotIncomplete as e:
+                        st.error(
+                            f"❌ В прайсе нет цен для: **{', '.join(e.missing)}**. "
+                            f"Добавьте строки в таблицу «Прайс материалов» и повторите запуск."
+                        )
+                        st.stop()
 
-                if val.get("warnings"):
-                    st.warning("Предупреждения: " + "; ".join(w["message"] for w in val["warnings"]))
-                if val.get("failed_checks"):
-                    st.error("Failed: " + "; ".join(w["message"] for w in val["failed_checks"]))
+                    val_result = validate_batch(result["pareto_candidates"])
+                    st.session_state["last_design"] = {
+                        "inverse": result,
+                        "validation": val_result,
+                    }
+    
+        # Отображение результата
+        if "last_design" in st.session_state:
+            d = st.session_state["last_design"]
+            inverse = d["inverse"]
+            validation = d["validation"]
+        
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Найдено кандидатов", inverse["n_candidates"])
+            c2.metric("Прошли валидацию", len(validation["approved"]))
+            c3.metric("Отсеяно", len(validation["rejected"]))
+            c4.metric("С warnings", sum(1 for c in validation["approved"] if c.get("validation", {}).get("overall") == "PASS_WITH_WARNINGS"))
+        
+            if validation["rejection_summary"]:
+                with st.expander("Причины отсева"):
+                    for reason, count in validation["rejection_summary"].items():
+                        st.write(f"- **{reason}**: {count}")
+
+            # Pareto plot (σт × cost) — Task 12
+            candidates_for_plot = inverse["pareto_candidates"]
+            if candidates_for_plot:
+                df_pareto = pd.DataFrame([{
+                    "idx": c["idx"],
+                    "sigma_t": c["predicted"]["mean"],
+                    "ci_half": c["predicted"]["ci_half_width"],
+                    "cost": (c["cost"]["total_per_ton"] if c.get("cost")
+                             else c["objectives"]["alloying_cost"]),
+                    "ood": "OOD" if c["predicted"]["ood_flag"] else "ok",
+                } for c in candidates_for_plot])
+
+                cost_currency = inverse.get("cost_currency", "EUR (legacy)")
+                st.subheader("Pareto front")
+                chart = (
+                    alt.Chart(df_pareto)
+                    .mark_circle(size=140)
+                    .encode(
+                        x=alt.X("sigma_t:Q", title="σт, МПа"),
+                        y=alt.Y("cost:Q", title=f"Стоимость, {cost_currency}/т"),
+                        color=alt.Color(
+                            "ood:N",
+                            scale=alt.Scale(domain=["ok", "OOD"],
+                                            range=["#2ecc71", "#e67e22"]),
+                        ),
+                        tooltip=["idx", "sigma_t", "ci_half", "cost", "ood"],
+                    )
+                    .interactive()
+                )
+                st.altair_chart(chart, width="stretch")
+
+            st.subheader("Топ-5 кандидатов")
+        
+            top5 = validation["approved"][:5] if validation["approved"] else inverse["pareto_candidates"][:5]
+            for i, c in enumerate(top5, 1):
+                comp = c.get("composition", {})
+                derived = c.get("derived", {})
+                pred = c.get("predicted", {})
+                val = c.get("validation", {})
+                overall = val.get("overall", "PASS")
+                emoji = {"PASS": "✅", "PASS_WITH_WARNINGS": "⚠️", "FAIL": "❌"}.get(overall, "❔")
+            
+                with st.expander(f"{emoji} Кандидат #{i} — σт = {pred.get('mean', 0):.0f} ± {pred.get('ci_half_width', 0):.0f} МПа"):
+                    cc1, cc2, cc3 = st.columns(3)
+                    with cc1:
+                        st.markdown("**Химия (%)**")
+                        non_zero = {k: v for k, v in comp.items() if v > 0.001}
+                        st.dataframe(
+                            pd.DataFrame([non_zero]).T.rename(columns={0: "%"}),
+                            width="stretch",
+                        )
+                    with cc2:
+                        st.markdown("**Обработка**")
+                        proc = c.get("processing", {})
+                        for k, v in proc.items():
+                            st.write(f"**{k}:** {v}")
+                        st.markdown("**Производные**")
+                        st.write(f"CEV = **{derived.get('cev_iiw', 0):.3f}**")
+                        st.write(f"Pcm = **{derived.get('pcm', 0):.3f}**")
+                        st.write(f"CEN = **{derived.get('cen', 0):.3f}**")
+                    with cc3:
+                        st.markdown("**Прогноз**")
+                        st.metric("σт", f"{pred.get('mean', 0):.0f} МПа",
+                                 f"±{pred.get('ci_half_width', 0):.0f} (90% CI)")
+                        st.write(f"Lower 90%: {pred.get('lower_90', 0):.0f}")
+                        st.write(f"Upper 90%: {pred.get('upper_90', 0):.0f}")
+                        st.write(f"OOD flag: {'⚠️ Да' if pred.get('ood_flag') else '✓ Нет'}")
+                        # Keep the legacy summary only when no cost breakdown is available
+                        if not c.get("cost"):
+                            st.markdown("**Стоимость (legacy)**")
+                            st.write(f"≈ {c.get('objectives', {}).get('alloying_cost', 0):.1f} €/т")
+
+                    if c.get("cost"):
+                        cb = c["cost"]
+                        st.markdown(
+                            f"**💰 Себестоимость:** "
+                            f"{cb['total_per_ton']:,.0f} {cb['currency']}/т "
+                            f"({cb['total_per_ton']/1000:,.2f} {cb['currency']}/кг, "
+                            f"{cb['mode']})"
+                        )
+                        df_bd = pd.DataFrame(cb["contributions"])
+                        if not df_bd.empty:
+                            df_bd["share_%"] = (
+                                df_bd["contribution_per_ton"] / cb["total_per_ton"] * 100
+                            ).round(1)
+                            df_bd = df_bd[[
+                                "material_id",
+                                "mass_kg_per_ton_steel",
+                                "price_per_kg",
+                                "contribution_per_ton",
+                                "share_%",
+                            ]]
+                            df_bd.columns = [
+                                "Материал", "Масса, кг/т",
+                                f"Цена, {cb['currency']}/кг",
+                                f"Вклад, {cb['currency']}/т", "Доля, %",
+                            ]
+                            st.dataframe(df_bd, width="stretch", hide_index=True)
+                            st.download_button(
+                                f"📋 Экспорт breakdown #{c['idx']} в CSV",
+                                data=df_bd.to_csv(index=False).encode("utf-8"),
+                                file_name=f"breakdown_candidate_{c['idx']}.csv",
+                                key=f"dl_bd_{c['idx']}",
+                            )
+
+                    if val.get("warnings"):
+                        st.warning("Предупреждения: " + "; ".join(w["message"] for w in val["warnings"]))
+                    if val.get("failed_checks"):
+                        st.error("Failed: " + "; ".join(w["message"] for w in val["failed_checks"]))
 
 
-# =========================================================================
+    # =========================================================================
 # Tab 2: Train model
 # =========================================================================
 
