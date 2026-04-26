@@ -15,6 +15,8 @@ htmlcov/
 data/*.parquet
 data/*.csv
 data/*.xlsx
+# Open Access NIMS dataset (Agrawal 2014, CC-BY 4.0) — needed for Streamlit Cloud demo
+!data/agrawal_nims_fatigue.parquet
 models/*/
 !models/.gitkeep
 
@@ -45,7 +47,6 @@ data/public_matminer_stats.json
 prompts/*.md
 !prompts/README.md
 data/public_raw/
-data/agrawal_nims_fatigue.parquet
 data/mpea_dataset.parquet
 docs/public_data_spike_metrics.json
 docs/agrawal_dataset_stats.json
