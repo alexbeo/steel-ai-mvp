@@ -141,6 +141,49 @@ def _check_d06_random_split_in_temporal(ctx: dict) -> CheckResult:
     return CheckResult(False)
 
 
+def _check_d08_training_pcm_distribution(ctx: dict) -> CheckResult:
+    """Warn if >5% of training records have Pcm > 0.22 (HSLA standard limit).
+
+    R-006 finding C-1: synthetic HSLA generator doesn't constrain joint Pcm —
+    can produce records that would never pass weldability spec in production.
+    Real-world HSLA datasets cluster around Pcm < 0.20. If training set has
+    significant Pcm > 0.22 mass, the model learns from infeasible-recipe
+    distribution. Informational warning (MEDIUM) — does not block, surfaces
+    drift between synthetic / real data domains.
+
+    Only applies when DataFrame contains C/Mn columns (HSLA-shaped).
+    """
+    df = ctx.get("dataframe")
+    if df is None or "c_pct" not in getattr(df, "columns", []):
+        return CheckResult(False)
+    if "mn_pct" not in df.columns:
+        return CheckResult(False)
+    # Compute Pcm per record (Ito-Bessyo)
+    g = lambda c: df[c].fillna(0) if c in df.columns else 0.0
+    pcm = (
+        g("c_pct")
+        + g("si_pct") / 30
+        + (g("mn_pct") + g("cu_pct") + g("cr_pct")) / 20
+        + g("ni_pct") / 60
+        + g("mo_pct") / 15
+        + g("v_pct") / 10
+        + 5 * g("b_pct")
+    )
+    high_share = float((pcm > 0.22).mean())
+    if high_share > 0.05:
+        return CheckResult(
+            True,
+            message=(
+                f"{high_share:.1%} training records имеют Pcm > 0.22 "
+                f"(HSLA standard weldability limit). Synthetic generator или "
+                f"data source включает recipes, которые не пройдут production "
+                f"weldability gate. Не блокирует, но flag для R-007 enrich."
+            ),
+            details={"share_above_0.22": high_share},
+        )
+    return CheckResult(False)
+
+
 def _check_d07_physical_bounds(ctx: dict) -> CheckResult:
     df = ctx.get("dataframe")
     if df is None:
@@ -703,6 +746,16 @@ PATTERNS: list[Pattern] = [
         description="Значения вне physical bounds",
         check=_check_d07_physical_bounds,
         suggestion="Удалить либо исправить (опечатки типа 3.45→0.345) с audit log.",
+    ),
+    Pattern(
+        id="D08",
+        title="Training data Pcm distribution exceeds weldability spec",
+        phase=Phase.PREPROCESSING,
+        severity=Severity.MEDIUM,
+        description=">5% training records с Pcm > 0.22 (HSLA standard limit)",
+        check=_check_d08_training_pcm_distribution,
+        suggestion="Constrain synthetic generator joint Pcm OR document training-data "
+                   "drift between synthetic and production HSLA domains.",
     ),
     Pattern(
         id="M01",
