@@ -1,0 +1,47 @@
+id: en10083_qt
+name: "Q&T Carbon Steels (EN 10083-2)"
+standard: "EN 10083-2"
+target_properties:
+  - id: hardness_hrc
+    label: "Твёрдость, HRC"
+    range: [20, 65]
+  - id: tensile_strength_mpa
+    label: "σв, МПа"
+    range: [500, 1500]
+feature_set:
+  - c_pct
+  - si_pct
+  - mn_pct
+  - p_pct
+  - s_pct
+  - cr_pct
+  - austenitizing_temp
+  - tempering_temp
+  - tempering_time_min
+  - section_thickness_mm
+physical_bounds:
+  c_pct: [0.18, 0.65]
+  si_pct: [0.15, 0.40]
+  mn_pct: [0.40, 0.80]
+  p_pct: [0.0, 0.035]
+  s_pct: [0.0, 0.035]
+  cr_pct: [0.0, 0.40]
+  austenitizing_temp: [820.0, 900.0]
+  tempering_temp: [150.0, 650.0]
+  tempering_time_min: [30.0, 180.0]
+  section_thickness_mm: [10.0, 100.0]
+expected_top_features:
+  - c_pct
+  - tempering_temp
+  - austenitizing_temp
+  - mn_pct
+  - section_thickness_mm
+process_params:
+  - austenitizing_temp
+  - tempering_temp
+  - tempering_time_min
+  - section_thickness_mm
+synthetic_generator_name: en10083_qt
+cost_seed_path: data/prices/seed_2026-04-23.yaml
+feature_engineering: passthrough
+target_o_activity_ppm: 15.0

@@ -1,0 +1,68 @@
+id: pipe_hsla
+name: "Pipe HSLA (API 5L X60-X70)"
+standard: "API 5L / EN 10208-2"
+target_properties:
+  - id: yield_strength_mpa
+    label: "σт, МПа"
+    range: [380, 800]
+  - id: tensile_strength_mpa
+    label: "σв, МПа"
+    range: [450, 900]
+  - id: elongation_pct
+    label: "δ, %"
+    range: [15, 45]
+  - id: kcv_neg60_j_cm2
+    label: "KCV-60, Дж/см²"
+    range: [20, 300]
+feature_set:
+  - c_pct
+  - si_pct
+  - mn_pct
+  - p_pct
+  - s_pct
+  - cr_pct
+  - ni_pct
+  - mo_pct
+  - cu_pct
+  - al_pct
+  - v_pct
+  - nb_pct
+  - ti_pct
+  - n_ppm
+  - rolling_finish_temp
+  - cooling_rate_c_per_s
+physical_bounds:
+  c_pct: [0.04, 0.12]
+  si_pct: [0.15, 0.55]
+  mn_pct: [0.90, 1.75]
+  p_pct: [0.005, 0.025]
+  s_pct: [0.002, 0.012]
+  cr_pct: [0.0, 0.30]
+  ni_pct: [0.0, 0.40]
+  mo_pct: [0.0, 0.10]
+  cu_pct: [0.05, 0.35]
+  al_pct: [0.020, 0.050]
+  v_pct: [0.0, 0.10]
+  nb_pct: [0.0, 0.06]
+  ti_pct: [0.0, 0.025]
+  n_ppm: [30.0, 80.0]
+  rolling_finish_temp: [750.0, 850.0]
+  cooling_rate_c_per_s: [8.0, 28.0]
+expected_top_features:
+  - c_pct
+  - mn_pct
+  - nb_pct
+  - ti_pct
+  - v_pct
+  - rolling_finish_temp
+  - cooling_rate_c_per_s
+  - cev_iiw
+  - pcm
+  - microalloying_sum
+process_params:
+  - rolling_finish_temp
+  - cooling_rate_c_per_s
+synthetic_generator_name: pipe_hsla
+cost_seed_path: data/prices/seed_2026-04-23.yaml
+feature_engineering: compute_hsla_features
+target_o_activity_ppm: 5.0

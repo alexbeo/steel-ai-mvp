@@ -1,0 +1,50 @@
+date: 2026-04-23
+currency: EUR
+source: seed
+notes: "Ориентировочный EUR-прайс для MVP-демо (европейский рынок); проверьте перед продакшеном"
+
+materials:
+  scrap:
+    kind: base
+    price_per_kg: 0.38
+    element_content: {Fe: 1.0}
+  FeMn-80:
+    kind: ferroalloy
+    price_per_kg: 1.80
+    element_content: {Mn: 0.80, Fe: 0.20}
+  FeSi-75:
+    kind: ferroalloy
+    price_per_kg: 2.10
+    element_content: {Si: 0.75, Fe: 0.25}
+  FeCr-HC:
+    kind: ferroalloy
+    price_per_kg: 2.60
+    element_content: {Cr: 0.65, Fe: 0.35}
+  FeNi:
+    kind: ferroalloy
+    price_per_kg: 12.00
+    element_content: {Ni: 0.30, Fe: 0.70}
+  FeMo:
+    kind: ferroalloy
+    price_per_kg: 34.00
+    element_content: {Mo: 0.60, Fe: 0.40}
+  FeV-50:
+    kind: ferroalloy
+    price_per_kg: 19.00
+    element_content: {V: 0.50, Fe: 0.50}
+  FeNb-65:
+    kind: ferroalloy
+    price_per_kg: 36.00
+    element_content: {Nb: 0.65, Fe: 0.35}
+  FeTi-70:
+    kind: ferroalloy
+    price_per_kg: 7.20
+    element_content: {Ti: 0.70, Fe: 0.30}
+  Cu:
+    kind: pure
+    price_per_kg: 8.50
+    element_content: {Cu: 1.0}
+  Al:
+    kind: pure
+    price_per_kg: 2.40
+    element_content: {Al: 1.0}

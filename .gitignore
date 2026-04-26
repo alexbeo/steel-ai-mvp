@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.Python
+env/
+venv/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data & models (большие файлы)
+data/*.parquet
+data/*.csv
+data/*.xlsx
+models/*/
+!models/.gitkeep
+
+# Reports
+reports/*.html
+reports/*.pdf
+
+# Decision log (SQLite) + runtime price snapshots (per-run audit YAMLs)
+decision_log/*.db
+decision_log/price_snapshots/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+*.pem
+data/public_matminer.parquet
+data/public_matminer_stats.json
+prompts/*.md
+!prompts/README.md
+data/public_raw/
+data/agrawal_nims_fatigue.parquet
+data/mpea_dataset.parquet
+docs/public_data_spike_metrics.json
+docs/agrawal_dataset_stats.json
+docs/mpea_dataset_stats.json
+docs/path2_agrawal_metrics.json
+docs/path2_mpea_metrics.json
+docs/a1_uplift_*.json
+docs/b1_formulas_*.json
+docs/property_cost_demo_*.md
+docs/b2_next_experiments_*.md
+/_private_archive/
