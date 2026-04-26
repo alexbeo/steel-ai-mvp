@@ -248,11 +248,22 @@ with tab_design:
         except Exception:
             pass
 
-    if _design_class_id == "en10083_qt":
+    if _design_class_id != "pipe_hsla":
+        # Forward-compatible guard: ANY non-HSLA class blocked from inverse design.
+        # Earlier draft only blocked en10083_qt — fatigue_carbon_steel slipped
+        # through and crashed pymoo with KeyError on missing process columns
+        # (R-006 follow-up bug fix).
+        _class_label = {
+            "en10083_qt": "EN 10083-2 Q&T (carbon)",
+            "fatigue_carbon_steel": "Carbon Fatigue (Agrawal NIMS)",
+        }.get(_design_class_id, _design_class_id)
         st.info(
-            "ℹ️ Inverse design пока работает только для **Pipe HSLA**. "
-            "Для класса EN 10083-2 Q&T используйте вкладку «📊 Прогноз». "
-            "Поддержка inverse design для Q&T запланирована на v2."
+            f"ℹ️ Inverse design пока работает только для **Pipe HSLA**. "
+            f"Активный класс — **{_class_label}**, для него используйте "
+            f"вкладку «📊 Прогноз». "
+            f"Поддержка inverse design для других классов запланирована "
+            f"на v2 (требует расширения NSGA-II под process-параметры "
+            f"и переработку variable_bounds логики)."
         )
         st.stop()
 
