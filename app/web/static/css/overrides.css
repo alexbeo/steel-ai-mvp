@@ -191,3 +191,254 @@
   border-top: 1px solid var(--border);
 }
 
+/* ───────── PR 3 — Tab «Прогноз» (single prediction) ───────── */
+
+.predict-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.predict-body {
+  padding: 18px 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.predict-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.predict-empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 22px;
+  color: var(--fg-2);
+  font-size: 13px;
+  text-align: center;
+}
+
+.predict-form-panel {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 18px 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.predict-model-row {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto;
+  gap: 18px;
+  align-items: end;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.predict-model-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.predict-model-label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.predict-model-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: right;
+  padding-bottom: 4px;
+}
+
+.predict-form-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.predict-form-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  color: var(--muted-2);
+}
+
+.predict-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px 14px;
+}
+
+.predict-feature-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.predict-feature-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.predict-feature-input-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.predict-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  width: 100%;
+}
+.predict-input:focus {
+  outline: 1px solid var(--accent);
+  border-color: var(--accent);
+}
+
+.predict-feature-bounds {
+  font-size: 10.5px;
+  color: var(--muted-2);
+}
+
+.predict-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.predict-result-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.predict-result {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.predict-result-headline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.predict-result-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.predict-result-mean {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  line-height: 1.05;
+}
+
+.predict-result-pm {
+  font-size: 18px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.predict-result-ci {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.predict-ood-warning {
+  border: 1px solid var(--warn);
+  background: oklch(28% 0.06 60 / 0.18);
+  border-radius: 3px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.predict-ood-title {
+  color: var(--warn);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.predict-ood-body {
+  font-size: 12px;
+  color: var(--fg-2);
+  line-height: 1.55;
+}
+
+.predict-derived {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.predict-derived-title {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.predict-derived-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px 14px;
+}
+
+.predict-derived-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.predict-derived-label {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.predict-derived-value {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
