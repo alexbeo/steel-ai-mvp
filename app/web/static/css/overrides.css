@@ -442,3 +442,297 @@
   color: var(--fg);
 }
 
+/* ───────── PR 4 — Tab «Раскисление» (deox calculator) ───────── */
+
+.deox-view {
+  display: flex;
+  flex-direction: column;
+}
+
+.deox-body {
+  padding: 18px 28px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.deox-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  border-radius: 3px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.deox-context {
+  display: flex;
+  gap: 18px;
+  align-items: end;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 12px 16px;
+  flex-wrap: wrap;
+}
+
+.deox-context-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.deox-context-label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.deox-context-value {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+.deox-subtab-strip {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.deox-subtab {
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 9px 18px;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.deox-subtab:last-child { border-right: 0; }
+.deox-subtab:hover { color: var(--fg); background: var(--surface-2); }
+.deox-subtab.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent-line);
+}
+.deox-subtab[disabled] {
+  color: var(--muted-2);
+  cursor: not-allowed;
+}
+.deox-subtab[disabled]:hover { background: transparent; color: var(--muted-2); }
+
+.deox-form-panel {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 18px 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.deox-form-heading {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.deox-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 14px;
+}
+
+.deox-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.deox-field-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.deox-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  width: 100%;
+}
+.deox-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+.deox-select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  width: 100%;
+}
+.deox-select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+
+.deox-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  gap: 8px;
+}
+
+.deox-result {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.deox-result-headline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deox-result-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.deox-result-mean {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  line-height: 1.05;
+}
+
+.deox-result-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.deox-result-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.deox-result-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.deox-result-cell-label {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.deox-result-cell-value {
+  font-size: 12.5px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
+
+.deox-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deox-warning {
+  border-radius: 3px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.deox-warning.high {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+}
+.deox-warning.medium {
+  color: var(--warn);
+  background: oklch(28% 0.06 60 / 0.18);
+  border: 1px solid var(--warn);
+}
+.deox-warning.low {
+  color: var(--fg-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.deox-warning .deox-warning-id {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  margin-right: 6px;
+}
+.deox-warning .deox-warning-suggestion {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.deox-compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.deox-compare-table th {
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.deox-compare-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+}
+.deox-compare-table tr:last-child td { border-bottom: 0; }
+.deox-compare-table .deox-compare-name {
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.deox-compare-table td.is-max { color: var(--warn); }
+.deox-compare-table td.is-min { color: var(--success); }
+
+.deox-spread-note {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+

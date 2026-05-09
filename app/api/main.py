@@ -56,12 +56,14 @@ def health() -> dict[str, Any]:
 # has a target. SafeJSONResponse now lives in app.api.responses, so routers no
 # longer create a circular import via this module.
 from app.api.routers import decisions as _decisions_router  # noqa: E402
+from app.api.routers import deox as _deox_router  # noqa: E402
 from app.api.routers import predict as _predict_router  # noqa: E402
 from app.api.routers import system as _system_router  # noqa: E402
 
 app.include_router(_decisions_router.router, prefix="/api", tags=["decisions"])
 app.include_router(_system_router.router, prefix="/api/system", tags=["system"])
 app.include_router(_predict_router.router, prefix="/api", tags=["predict"])
+app.include_router(_deox_router.router, prefix="/api/deox", tags=["deox"])
 
 
 # StaticFiles mount comes LAST so /api/* routes take precedence.
