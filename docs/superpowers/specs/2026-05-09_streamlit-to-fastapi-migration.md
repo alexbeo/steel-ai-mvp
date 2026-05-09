@@ -311,6 +311,8 @@
 | `POST /api/active-learning/propose` | `active_learner.propose_next_experiments` + `log_decision` | req: `{model_version, n_samples, top_k, seed}`. resp: `{baseline, f_star, proposals: [...]}`. **Synchronous** — операция дешёвая (150 ms-3 s), polling не нужен. |
 | `GET /api/active-learning/last?model_version=` | `query_decisions(tag=active_learning)` | latest run |
 
+**Намеренно отложено** (deferred from PR 5): `GET /api/active-learning/last?model_version=` — Streamlit показывает «Прошлых запусков: N · последний {timestamp}» через `query_decisions`. В FastAPI это уже доступно через PR 2 endpoint `GET /api/decisions?phase=inverse_design&tag=active_learning`; UI может вытащить count + latest timestamp без отдельного endpoint'а. Если в future понадобится дашборд истории — реализуем точечно (~30 строк), сейчас sync recompute дешевле persistence stale results.
+
 ### Topbar / KPI strip — agreggates
 
 KPI strip в `index.html` показывает: «Плавок за смену», «In-spec rate», «Себестоимость», «Перерасход Al», «PhD-рецензий за нед.». Это **бизнес-метрики, которых сейчас нет в backend**. См. Open Question #5 ниже.
