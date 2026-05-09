@@ -1014,3 +1014,78 @@
   border-top: 1px solid var(--border);
 }
 
+/* ───────── PR 6 — Job progress component ───────── */
+
+.job-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.job-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.job-progress-label {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  letter-spacing: 0.02em;
+}
+
+.job-progress-percent {
+  font-size: 11.5px;
+  color: var(--accent);
+  min-width: 42px;
+  text-align: right;
+}
+
+.job-progress-cancel {
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
+.job-progress-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.job-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 220ms ease-out;
+}
+
+.job-progress.done .job-progress-fill {
+  background: var(--success);
+}
+
+.job-progress.error .job-progress-fill {
+  background: var(--danger);
+}
+
+.job-progress-message {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  min-height: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.job-progress.error .job-progress-message {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
