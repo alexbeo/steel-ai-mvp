@@ -286,9 +286,11 @@
 | `POST /api/deox/forward` | `deoxidation.compute_al_demand` + `pattern_library.run_all_patterns(Phase.DEOXIDATION)` | req: `{o_a_initial_ppm, target_o_a_ppm, temperature_C, steel_mass_ton, al_purity_pct, burn_off_pct, model_id, heat_id?}`. resp: `{result: AlDemandResult, warnings: [...]}` |
 | `POST /api/deox/inverse` | `deoxidation.compute_al_quality` | req: `{o_a_before_ppm, o_a_after_ppm, al_added_kg, temperature_C, steel_mass_ton, burn_off_pct, model_id}`. resp: `{result, warnings}` |
 | `POST /api/deox/compare` | `deoxidation.compare_all_models` | resp: `{models: [...3 results...], spread_pct}` |
-| `POST /api/deox/ai-advisor` (long-running, ~3 мин) | `compare_all_models` + `make_deoxidation_advisor.advise` + `make_deoxidation_critic.review` + log_decision | req: `{heat_context, llm_options}`. resp: `{job_id}` → result `{advisory, critic_verdict, log_id}` |
+| `POST /api/deox/ai-cycle` (long-running, ~3 мин) | `compare_all_models` + `make_deoxidation_advisor.advise` + `make_deoxidation_critic.review` + log_decision | req: `{heat_context, llm_options}`. resp: `{job_id}` → result `{advisor, critic, decision_log_id}` |
 | `POST /api/decisions/save` | `log_decision` | optional persistence для forward/inverse |
 | `GET /api/deox/models` | `THERMO_MODELS` registry | `[{id, name, citation, applicability_note}]` |
+
+> **Convention для paired-LLM endpoints:** `<scope>/ai-cycle` (PR 9 `deox/ai-cycle`, PR 11 `recipes/ai-cycle` если применимо) — endpoint, который запускает paired generator+critic пару (Sonnet advisor + Sonnet critic) одним job'ом и возвращает `{advisor, critic, decision_log_id}`. Single-LLM endpoints (PR 10 hypotheses) — просто `<scope>/run` или `<scope>/generate` без `ai-cycle` суффикса. Расхождение с черновиком этого spec'а (изначально было `ai-advisor` с keys `{advisory, critic_verdict, log_id}`) зафиксировано в PR 9 review: `ai-cycle` точнее описывает paired-pattern, ключи без суффикса (`advisor`/`critic`) короче и читаемее в UI/JS-коде.
 
 ### Tab «Гипотезы» (LLM, ~3 мин)
 
@@ -334,7 +336,7 @@ app/
       predict.py                # /api/predict, /api/anomaly-explain
       design.py                 # /api/inverse-design, /api/price-snapshot
       train.py                  # /api/train
-      deox.py                   # /api/deox/{forward,inverse,compare,ai-advisor}, /api/deox/models
+      deox.py                   # /api/deox/{forward,inverse,compare,ai-cycle}, /api/deox/models
       hypotheses.py             # /api/hypotheses/{run,last}
       recipes.py                # /api/recipes/{run,last}
       active_learning.py        # /api/active-learning/{propose,last}

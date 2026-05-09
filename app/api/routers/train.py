@@ -132,6 +132,9 @@ class TrainRunRequest(BaseModel):
 # ──────────────────────────────────────────────────────────────────────
 
 
+# TODO(jobs.py): consolidate _check_cancelled with deox.py:_check_cancelled и train.py:_check_cancelled
+# (когда _make_progress_cb в jobs.py получит третий freevar — обе копии silently сломаются).
+# Move в app/api/jobs.py как public helper get_job_cancellation_flag(progress) -> bool.
 def _check_cancelled(progress: Any) -> bool:
     """Peek at the job's cancellation flag through the progress closure.
 
