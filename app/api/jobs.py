@@ -15,6 +15,19 @@ PR 6 adds:
     worse than the rest of the in-memory state (design doc Risks #1).
   • ``list_jobs`` for a future debugging UI; harmless to expose now.
 
+PR 7 adds:
+  • ``Job.cancellation_requested`` — cooperative cancellation flag set by
+    ``DELETE /api/jobs/{id}``. Long-running ops that read the flag (none
+    in MVP — pymoo NSGA-II runs as a single ``minimize`` call without
+    callbacks) can short-circuit; for the rest we rely on
+    ``Future.cancel()`` (effective only before the worker picked the job
+    up). Once a worker is mid-flight the job continues until completion
+    or unhandled exception, but the status flips to ``error`` with a
+    "Cancelled by user" message so the UI immediately stops polling.
+  • ``JobStore.request_cancel(job_id)`` — single entry point that sets
+    the flag, calls ``Future.cancel()``, and (when the worker had not
+    yet started) marks status=ERROR synchronously.
+
 Backward compatibility: PR 1 callers used ``store.create(fn, *args)`` and
 ``store.get(id)``. Both signatures are preserved exactly. The new
 ``progress`` injection is opt-in — if ``fn`` does not declare a ``progress``
@@ -69,6 +82,11 @@ class Job:
     # current step ("Optuna trial 3/10", "NSGA-II generation 12/40", etc.).
     progress: float = 0.0
     message: str = ""
+    # PR 7: cooperative cancellation flag. Long-running ops MAY peek at this
+    # via the same JobStore singleton (``get_job_store().get(job_id)
+    # .cancellation_requested``) to bail out early; otherwise it's just a
+    # paper trail of the user clicking «Отменить». Default False.
+    cancellation_requested: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +98,7 @@ class Job:
             "error": self.error,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "cancellation_requested": self.cancellation_requested,
         }
 
 
@@ -103,6 +122,11 @@ class JobStore:
         retain_finished: timedelta = DEFAULT_RETAIN_FINISHED,
     ) -> None:
         self._jobs: dict[str, Job] = {}
+        # PR 7: track Future per job so DELETE can call .cancel() and
+        # short-circuit pending work before the worker thread picks it up.
+        # Keyed by job_id; entry deleted in _run() finally so memory stays
+        # bounded by retain_finished window.
+        self._futures: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="steel-ai-job"
@@ -131,7 +155,12 @@ class JobStore:
         if self._fn_accepts_progress(fn):
             kwargs = {**kwargs, "progress": self._make_progress_cb(job_id)}
 
-        self._executor.submit(self._run, job_id, fn, args, kwargs)
+        future = self._executor.submit(self._run, job_id, fn, args, kwargs)
+        # Stash the Future so request_cancel can call .cancel() if the
+        # worker hasn't started yet. We deliberately do NOT keep a reference
+        # to the user's fn — once submitted, the executor owns lifecycle.
+        with self._lock:
+            self._futures[job_id] = future
         return job_id
 
     def get(self, job_id: str) -> Job | None:
@@ -143,6 +172,56 @@ class JobStore:
         self._maybe_evict()
         with self._lock:
             return self._jobs.get(job_id)
+
+    def request_cancel(self, job_id: str) -> Job | None:
+        """PR 7: cooperative cancellation entry point.
+
+        Returns the live Job after the cancellation attempt, or None if
+        the id is unknown / already evicted. Behaviour:
+
+        * status=PENDING and Future.cancel() succeeded → mark ERROR
+          synchronously with "Cancelled by user" message. The worker
+          never executes ``fn``.
+        * status=RUNNING (worker already started) → set
+          ``cancellation_requested=True`` and call Future.cancel() (no-op
+          for running tasks under stdlib ThreadPoolExecutor — purely a
+          flag for cooperative ops). Worker will continue to completion
+          unless ``fn`` reads the flag and bails. We do not promise
+          immediate termination; this is documented in the design doc.
+        * status=DONE / ERROR → no-op (transition is already terminal).
+
+        Idempotent: calling twice has the same effect as once.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            future = self._futures.get(job_id)
+        if job is None:
+            return None
+        # Already terminal — nothing to cancel. Returning the job lets
+        # the router surface "already done" with status code 200 instead
+        # of erroring.
+        if job.status in (JobStatus.DONE, JobStatus.ERROR):
+            return job
+        # Mark intent; ``fn`` may read this via the singleton store.
+        self._update(job_id, cancellation_requested=True)
+        cancelled = False
+        if future is not None:
+            try:
+                cancelled = future.cancel()
+            except Exception:  # pragma: no cover — defensive
+                cancelled = False
+        # If we cancelled before the worker started, _run never executes
+        # so we have to flip the state here. We mirror the ERROR shape
+        # used by the worker's exception path so the frontend treats this
+        # uniformly.
+        if cancelled and job.status is JobStatus.PENDING:
+            self._update(
+                job_id,
+                status=JobStatus.ERROR,
+                error="Cancelled by user (before worker started)",
+                finished_at=datetime.now(timezone.utc),
+            )
+        return self._jobs.get(job_id)
 
     def list_jobs(self, limit: int = 50) -> list[Job]:
         """Most-recent-first snapshot of jobs (for a future debug endpoint).
@@ -235,6 +314,7 @@ class JobStore:
             ]
             for jid in stale:
                 del self._jobs[jid]
+                self._futures.pop(jid, None)
 
     def _run(
         self,
@@ -270,6 +350,12 @@ class JobStore:
                 error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
                 finished_at=datetime.now(timezone.utc),
             )
+        finally:
+            # PR 7: drop the Future reference once the worker is done so
+            # the dict doesn't grow without bound. ``_futures`` is purely
+            # a cancellation handle — no value once the job is terminal.
+            with self._lock:
+                self._futures.pop(job_id, None)
 
 
 @lru_cache(maxsize=1)
