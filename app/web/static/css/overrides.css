@@ -1591,3 +1591,287 @@
   border-top: 1px solid var(--border);
 }
 
+/* ──────────────────────────────────────────────────────────────────
+   Train view (PR 8) — Tab «Обучение модели»
+   Reuses .design-* form patterns where possible (.train-form-grid is
+   structurally identical, just renamed for clarity in DevTools).
+   ────────────────────────────────────────────────────────────────── */
+
+.train-view { display: flex; flex-direction: column; gap: 16px; }
+.train-body { display: flex; flex-direction: column; gap: 18px; }
+
+.train-error {
+  background: rgba(232, 116, 116, 0.10);
+  border: 1px solid rgba(232, 116, 116, 0.35);
+  color: #f0c4c4;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.train-form-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.train-form-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.train-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.train-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.train-field-label {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.train-field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.train-field-checkbox .train-field-label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11.5px;
+  color: var(--fg-2);
+}
+
+.train-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+.train-class-description {
+  font-size: 11.5px;
+  color: var(--muted);
+  flex: 1;
+}
+
+.train-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+
+.train-progress-mount:empty { display: none; }
+
+/* Result panel */
+.train-result-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.train-result-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.train-result-title { font-size: 13px; color: var(--fg); }
+.train-result-meta { font-size: 11px; color: var(--muted); }
+
+.train-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.train-metric-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.train-metric-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.train-metric-value { font-size: 14px; color: var(--fg); }
+
+.train-metric-good { border-color: rgba(108, 209, 132, 0.45); }
+.train-metric-good .train-metric-value { color: rgba(174, 234, 188, 1); }
+.train-metric-warn { border-color: rgba(247, 168, 92, 0.45); }
+.train-metric-warn .train-metric-value { color: rgba(247, 200, 150, 1); }
+.train-metric-bad { border-color: rgba(232, 116, 116, 0.45); }
+.train-metric-bad .train-metric-value { color: rgba(240, 170, 170, 1); }
+
+/* Critic */
+.train-critic-mount {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.train-critic-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.train-section-title {
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0;
+  font-weight: 500;
+}
+
+.train-critic-empty {
+  font-size: 11.5px;
+  color: rgba(174, 234, 188, 0.85);
+  padding: 6px 10px;
+  background: rgba(108, 209, 132, 0.06);
+  border-left: 2px solid rgba(108, 209, 132, 0.45);
+  border-radius: 0 4px 4px 0;
+}
+
+.train-critic-empty.muted {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.02);
+  border-left-color: var(--border);
+}
+
+.train-critic-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.train-critic-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.train-critic-item.severity-high { border-left-color: rgba(232, 116, 116, 0.85); }
+.train-critic-item.severity-medium { border-left-color: rgba(247, 168, 92, 0.85); }
+.train-critic-item.severity-low { border-left-color: rgba(124, 178, 255, 0.65); }
+
+.train-critic-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.train-critic-id {
+  font-size: 10.5px;
+  color: var(--fg-2);
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.train-critic-sev {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.train-critic-sev.severity-high {
+  color: rgba(245, 175, 175, 1);
+  background: rgba(232, 116, 116, 0.18);
+}
+.train-critic-sev.severity-medium {
+  color: rgba(247, 200, 150, 1);
+  background: rgba(247, 168, 92, 0.18);
+}
+.train-critic-sev.severity-low {
+  color: rgba(160, 195, 240, 1);
+  background: rgba(124, 178, 255, 0.14);
+}
+
+.train-critic-message { color: var(--fg); }
+.train-critic-suggestion {
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+/* Feature importance */
+.train-importance-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.train-importance-mount {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px;
+  min-height: 240px;
+}
+
+.feature-importance-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.train-chart-fallback {
+  padding: 16px;
+  color: rgba(240, 170, 170, 1);
+  font-size: 11.5px;
+}
+
+.train-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+

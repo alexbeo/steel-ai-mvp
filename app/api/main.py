@@ -135,6 +135,7 @@ from app.api.routers import jobs as _jobs_router  # noqa: E402
 from app.api.routers import predict as _predict_router  # noqa: E402
 from app.api.routers import prices as _prices_router  # noqa: E402
 from app.api.routers import system as _system_router  # noqa: E402
+from app.api.routers import train as _train_router  # noqa: E402
 
 app.include_router(_decisions_router.router, prefix="/api", tags=["decisions"])
 app.include_router(_system_router.router, prefix="/api/system", tags=["system"])
@@ -148,6 +149,7 @@ app.include_router(
 app.include_router(_jobs_router.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(_design_router.router, prefix="/api/design", tags=["design"])
 app.include_router(_prices_router.router, prefix="/api/prices", tags=["prices"])
+app.include_router(_train_router.router, prefix="/api/train", tags=["train"])
 
 
 # StaticFiles mount comes LAST so /api/* routes take precedence.

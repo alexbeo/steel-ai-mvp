@@ -15,6 +15,7 @@ import pickle
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -107,6 +108,7 @@ def train_model(
     n_optuna_trials: int = 40,
     random_seed: int = 42,
     steel_class: str = "pipe_hsla",
+    cancellation_callback: Callable[[], bool] | None = None,
 ) -> TrainedModel:
     import xgboost as xgb  # type: ignore[import-not-found]
     import optuna  # type: ignore[import-not-found]
@@ -144,7 +146,29 @@ def train_model(
     
     study = optuna.create_study(direction="minimize",
                                 sampler=optuna.samplers.TPESampler(seed=random_seed))
-    study.optimize(objective, n_trials=n_optuna_trials, show_progress_bar=False)
+
+    # Cooperative per-trial cancellation. ``cancellation_callback`` is a
+    # caller-supplied predicate (no args) that returns True when the user
+    # requested cancellation. We call ``study.stop()`` so Optuna finishes
+    # the current trial then exits the loop cleanly. If no callback is
+    # supplied (default), no callbacks list is passed and behaviour is
+    # identical to the pre-PR-8 baseline.
+    def _maybe_stop(study, trial):
+        if cancellation_callback and cancellation_callback():
+            study.stop()
+
+    study.optimize(
+        objective,
+        n_trials=n_optuna_trials,
+        callbacks=[_maybe_stop] if cancellation_callback else [],
+        show_progress_bar=False,
+    )
+    # If cancellation was requested, raise here — even if some trials
+    # completed, we don't want to waste compute on the final retrain.
+    # The router maps "Cancelled by user" → JobStatus.ERROR so the UI
+    # sees the cancel reflected promptly.
+    if cancellation_callback and cancellation_callback():
+        raise RuntimeError("Cancelled by user (Optuna stopped)")
     best_params = study.best_params
     logger.info("Best params: %s (MAE val=%.2f)", best_params, study.best_value)
     
