@@ -20,7 +20,7 @@ import numpy as np
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.main import SafeJSONResponse, _json_default
+from app.api.responses import SafeJSONResponse, _json_default
 
 
 # ---------- _json_default unit tests (no HTTP layer) ----------

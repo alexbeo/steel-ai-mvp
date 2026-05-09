@@ -9,17 +9,15 @@ decisions land in subsequent PRs.
 """
 from __future__ import annotations
 
-import dataclasses
-import json
 import logging
 import os
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+from app.api.responses import SafeJSONResponse, _json_default  # noqa: F401 — re-exported for back-compat
 
 logger = logging.getLogger(__name__)
 
@@ -37,54 +35,6 @@ except ImportError:  # pragma: no cover — dotenv is in requirements but tolera
     logger.warning("python-dotenv not installed; skipping .env load")
 
 
-def _json_default(obj: Any) -> Any:
-    """Catch-all encoder for non-JSON-native types at the API boundary.
-
-    Order matters: numpy scalars must produce real numbers (not strings) so
-    Plotly / charting code in PR 3 can consume them without parseFloat. We
-    avoid a module-level numpy import (heavy on cold start) and instead rely
-    on duck-typing — numpy scalars expose .item(), arrays expose .tolist(),
-    both are detectable without importing numpy.
-    """
-    # numpy scalar (np.float32, np.int64, np.bool_, ...) — has .item() returning
-    # native Python scalar. Guarded by hasattr to avoid importing numpy.
-    if hasattr(obj, "item") and callable(obj.item) and hasattr(obj, "dtype"):
-        try:
-            return obj.item()
-        except (ValueError, TypeError):
-            pass
-    # numpy.ndarray (and array-like with .tolist()) → list of native Python types
-    if hasattr(obj, "tolist") and callable(obj.tolist) and hasattr(obj, "dtype"):
-        return obj.tolist()
-    # dataclass instance (not class) → dict; recurse via json.dumps default
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return dataclasses.asdict(obj)
-    # datetime / date → ISO 8601 string
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    # last resort — string repr (matches previous default=str behaviour for
-    # Path, Enum without .value access, etc.)
-    return str(obj)
-
-
-class SafeJSONResponse(JSONResponse):
-    """JSONResponse with numpy/dataclass/datetime-aware encoder.
-
-    Backend functions return numpy floats, datetimes, dataclasses; the project
-    discipline is to convert at the API boundary. The custom encoder produces
-    JSON-native numbers (not strings) for numpy scalars/arrays so charting code
-    in downstream PRs does not need parseFloat. See _json_default.
-    """
-
-    def render(self, content: Any) -> bytes:
-        return json.dumps(
-            content,
-            ensure_ascii=False,
-            allow_nan=False,
-            default=_json_default,
-        ).encode("utf-8")
-
-
 app = FastAPI(
     title="Steel AI MVP API",
     version=API_VERSION,
@@ -100,6 +50,14 @@ def health() -> dict[str, Any]:
         "version": API_VERSION,
         "llm_ready": bool(os.environ.get("ANTHROPIC_API_KEY")),
     }
+
+
+# Routers — imported after the FastAPI app instance is created so include_router
+# has a target. SafeJSONResponse now lives in app.api.responses, so routers no
+# longer create a circular import via this module.
+from app.api.routers import decisions as _decisions_router  # noqa: E402
+
+app.include_router(_decisions_router.router, prefix="/api", tags=["decisions"])
 
 
 # StaticFiles mount comes LAST so /api/* routes take precedence.
