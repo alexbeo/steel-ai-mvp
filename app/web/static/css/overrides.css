@@ -404,6 +404,116 @@
   line-height: 1.55;
 }
 
+/* PR 12 — anomaly explainer button row + result card inside the OOD/wide-CI block. */
+
+.predict-ood-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.predict-ood-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.predict-explain-mount {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.predict-explain-error {
+  font-size: 12px;
+  color: var(--err, var(--warn));
+  padding: 8px 10px;
+  border: 1px solid var(--err, var(--warn));
+  border-radius: 3px;
+  background: oklch(28% 0.07 25 / 0.16);
+}
+
+.predict-explain-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 12px 14px;
+  background: var(--surface-2, transparent);
+}
+
+.predict-explain-severity {
+  display: inline-block;
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: white;
+  background: var(--muted);
+}
+
+.predict-explain-severity.sev-low {
+  background: #558ccc;
+}
+
+.predict-explain-severity.sev-medium {
+  background: #f17105;
+}
+
+.predict-explain-severity.sev-high {
+  background: #d11149;
+}
+
+.predict-explain-summary {
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 0;
+  color: var(--fg);
+}
+
+.predict-explain-section-title {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.predict-explain-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.predict-explain-range {
+  color: var(--muted);
+}
+
+.predict-explain-note {
+  font-size: 11.5px;
+  color: var(--fg-2);
+  margin-top: 2px;
+}
+
+.predict-explain-paragraph {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.predict-explain-footer {
+  font-size: 10.5px;
+  color: var(--muted);
+  align-self: flex-end;
+}
+
 .predict-derived {
   display: flex;
   flex-direction: column;

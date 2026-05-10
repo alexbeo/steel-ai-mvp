@@ -1,4 +1,8 @@
-"""Tests for /api/system/* + /api/predict (PR 3 of FastAPI migration).
+"""Tests for /api/system/* + /api/predict + /api/predict/anomaly-explain.
+
+PR 3 introduced the prediction endpoint with a placeholder OOD warning
+button; PR 12 wires the placeholder up to a real Sonnet-backed anomaly
+explainer running as a long-running job + adds the wide-CI heuristic.
 
 Test isolation strategy:
     - We avoid spinning up Optuna training in tests (5 min budget). Instead
@@ -11,6 +15,11 @@ Test isolation strategy:
     - For predict tests we send the full feature_set with mid-range values
       drawn from the class profile's physical_bounds, mirroring how the
       Streamlit UI builds default values.
+    - For PR 12 anomaly-explain tests we monkeypatch the
+      ``app.backend.anomaly_explainer.make_anomaly_explainer`` factory
+      with a MagicMock-backed stub so the LLM never gets called. The
+      router lazy-imports the factory inside the worker — patching the
+      source module catches the call.
 
     This pattern keeps tests fast (~1 sec total) and exercises the real
     XGBoost prediction path. Down side: tests skip cleanly when the repo
@@ -21,15 +30,19 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.jobs import get_job_store
 from app.api.main import app
 from app.api.routers import system as system_router
 from app.backend import model_trainer
+from app.backend.anomaly_explainer import AnomalousFeature, AnomalyExplanation
 from app.backend.steel_classes import load_steel_class
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -404,3 +417,385 @@ def test_predict_safe_json_numeric(
     assert isinstance(payload["ood"]["log_density"], (int, float))
     for k, v in payload["derived"].items():
         assert isinstance(v, (int, float)), f"derived[{k}] must be numeric"
+
+
+# ---------- PR 12: wide_ci flag + deprecated alias regression ------------
+
+
+def test_predict_response_includes_wide_ci_flag(
+    populated_models_dir: Path, client: TestClient
+) -> None:
+    """PR 12: prediction.wide_ci surfaces the heuristic the UI uses to
+    decide whether to show the anomaly-explain button on non-OOD points.
+
+    Threshold details are an implementation detail — we only assert the
+    *shape*: a boolean flag + a numeric threshold echoed back. Concrete
+    threshold values are unit-tested at the helper level if needed.
+    """
+    version = next(populated_models_dir.iterdir()).name
+    composition = _midrange_composition("pipe_hsla")
+
+    resp = client.post(
+        "/api/predict",
+        json={"model_version": version, "composition": composition},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert "wide_ci" in payload["prediction"]
+    assert isinstance(payload["prediction"]["wide_ci"], bool)
+    assert "wide_ci_threshold" in payload["prediction"]
+    assert isinstance(payload["prediction"]["wide_ci_threshold"], (int, float))
+
+
+def test_predict_response_lower_p_deprecated_still_present(
+    populated_models_dir: Path, client: TestClient
+) -> None:
+    """Regression: PR 12 deprecation must not break the lower_p/upper_p
+    aliases — the PR 3 frontend still depends on them. They're scheduled
+    for removal once views/predict.js cuts over to q05/q95 exclusively
+    (tracked in design-doc backlog) — until then they MUST equal q05/q95.
+    """
+    version = next(populated_models_dir.iterdir()).name
+    composition = _midrange_composition("pipe_hsla")
+
+    resp = client.post(
+        "/api/predict",
+        json={"model_version": version, "composition": composition},
+    )
+    assert resp.status_code == 200
+    pred = resp.json()["prediction"]
+    assert "lower_p" in pred and "upper_p" in pred
+    assert pred["lower_p"] == pytest.approx(pred["q05"])
+    assert pred["upper_p"] == pytest.approx(pred["q95"])
+
+
+# ---------- PR 12: /api/predict/anomaly-explain --------------------------
+
+
+@pytest.fixture(autouse=False)
+def _ensure_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests that target the LLM-backed anomaly endpoint assume the key
+    is present at the gating-check step. The factory is monkeypatched
+    separately so no Anthropic SDK call ever fires.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-anomaly")
+
+
+@pytest.fixture()
+def reset_job_store_singleton() -> Iterator[None]:
+    """Fresh JobStore per test — avoids cross-test pollution under the
+    opportunistic eviction policy.
+    """
+    get_job_store.cache_clear()
+    yield
+    get_job_store.cache_clear()
+
+
+def _stub_explanation(severity: str = "MEDIUM") -> AnomalyExplanation:
+    """Realistic AnomalyExplanation dataclass — same fields a real
+    AnomalyExplainer.explain call would emit.
+    """
+    return AnomalyExplanation(
+        id="ax01",
+        summary="Mn выше верхней границы training; risk Hall-Petch shift.",
+        anomalous_features=[
+            AnomalousFeature(
+                feature="mn_pct",
+                value=2.10,
+                training_range=[0.4, 1.8],
+                deviation_kind="out_of_range_high",
+                note="2.10 wt% Mn — вне training [0.4, 1.8].",
+            ),
+        ],
+        mechanism_concerns=[
+            "Hall-Petch grain refinement не проверена для Mn>1.8%",
+            "Возможны MnS inclusions при S≥0.005%",
+        ],
+        production_risks="Hot shortness риск при rolling >1100 °C.",
+        suggested_correction="Снизить Mn к 1.6-1.7 wt%, скомпенсировать Si +0.1%.",
+        severity=severity,
+        tags=["steel_class:pipe_hsla"],
+    )
+
+
+def _patch_anomaly_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    explanation: AnomalyExplanation | None = None,
+) -> MagicMock:
+    """Replace the factory with a MagicMock returning a canned explanation."""
+    if explanation is None:
+        explanation = _stub_explanation()
+    explainer_mock = MagicMock()
+    explainer_mock.explain.return_value = explanation
+    monkeypatch.setattr(
+        "app.backend.anomaly_explainer.make_anomaly_explainer",
+        lambda: explainer_mock,
+    )
+    return explainer_mock
+
+
+def _wait_for_job(
+    client: TestClient, job_id: str, timeout: float = 15.0
+) -> dict:
+    """Poll /api/jobs/{id} until terminal — same shape as test_api_hypotheses."""
+    deadline = time.monotonic() + timeout
+    body: dict = {}
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/jobs/{job_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        if body["status"] in ("done", "error"):
+            return body
+        time.sleep(0.05)
+    pytest.fail(f"job {job_id} did not finish within {timeout}s; last={body!r}")
+
+
+def _baseline_anomaly_payload(
+    *, version: str, composition: dict[str, float], **overrides: object
+) -> dict:
+    body: dict = {
+        "model_version": version,
+        "composition": composition,
+        "predicted_mean": 540.0,
+        "predicted_q05": 480.0,
+        "predicted_q95": 620.0,
+        "is_ood": True,
+        "save_to_decision_log": False,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_anomaly_explain_returns_job_id(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _ensure_api_key: None,
+    reset_job_store_singleton: None,
+) -> None:
+    """Valid body → 200 + ``{job_id, config}``."""
+    _patch_anomaly_factory(monkeypatch)
+    version = next(populated_models_dir.iterdir()).name
+    composition = _midrange_composition("pipe_hsla")
+
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        json=_baseline_anomaly_payload(version=version, composition=composition),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert isinstance(body.get("job_id"), str) and len(body["job_id"]) > 0
+    assert body["config"]["model_version"] == version
+    assert body["config"]["is_ood"] is True
+    assert body["config"]["save_to_decision_log"] is False
+
+    # Drain the job — the worker runs on the JobStore thread pool which
+    # persists across tests. If we don't wait here, the next test's
+    # ``explainer_mock.assert_called_once`` may catch *this* job's call
+    # because the monkeypatched factory is shared across tests until the
+    # subsequent test re-patches it (and the original call still resolves
+    # against the original mock on the worker thread).
+    _wait_for_job(client, body["job_id"], timeout=10.0)
+
+
+def test_anomaly_explain_validation_422(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _ensure_api_key: None,
+) -> None:
+    """Missing required fields → 422 from Pydantic.
+
+    We test the most common malformed-body case: composition omitted
+    entirely. The endpoint should reject before path validation /
+    LLM gating fire.
+    """
+    _patch_anomaly_factory(monkeypatch)
+    version = next(populated_models_dir.iterdir()).name
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        # Missing composition + predicted_* fields.
+        json={"model_version": version, "is_ood": True},
+    )
+    assert resp.status_code == 422
+
+
+def test_anomaly_explain_path_traversal_400(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _ensure_api_key: None,
+) -> None:
+    """CWE-22 regression: ``../app`` rejected by ``_safe_version_dir``."""
+    _patch_anomaly_factory(monkeypatch)
+    composition = _midrange_composition("pipe_hsla")
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        json=_baseline_anomaly_payload(version="../app", composition=composition),
+    )
+    assert resp.status_code == 400
+
+
+def test_anomaly_explain_no_api_key_503(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ANTHROPIC_API_KEY → 503 with actionable Russian message."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _patch_anomaly_factory(monkeypatch)
+    version = next(populated_models_dir.iterdir()).name
+    composition = _midrange_composition("pipe_hsla")
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        json=_baseline_anomaly_payload(version=version, composition=composition),
+    )
+    assert resp.status_code == 503
+    assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
+
+
+def test_anomaly_explain_unknown_model_404(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _ensure_api_key: None,
+) -> None:
+    """Valid slug but model dir is missing → 404."""
+    _patch_anomaly_factory(monkeypatch)
+    composition = _midrange_composition("pipe_hsla")
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        json=_baseline_anomaly_payload(
+            version="no_such_model_v0", composition=composition
+        ),
+    )
+    assert resp.status_code == 404
+
+
+def test_anomaly_explain_to_completion_with_mock_llm(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _ensure_api_key: None,
+    reset_job_store_singleton: None,
+) -> None:
+    """Submit + poll + verify result shape with a stub explainer."""
+    explainer_mock = _patch_anomaly_factory(monkeypatch)
+    version = next(populated_models_dir.iterdir()).name
+    composition = _midrange_composition("pipe_hsla")
+
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        json=_baseline_anomaly_payload(version=version, composition=composition),
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+
+    body = _wait_for_job(client, job_id, timeout=10.0)
+    if body["status"] != "done":
+        pytest.fail(
+            f"job ended with status={body['status']} error={body.get('error')!r}"
+        )
+
+    result = body["result"]
+
+    # Result shape: explanation dict + evidence list + duration.
+    assert result["model_version"] == version
+    assert isinstance(result["explanation"], dict)
+    assert result["explanation"]["severity"] == "MEDIUM"
+    assert result["explanation"]["summary"]
+    # Anomalous features come back as plain dicts after asdict.
+    assert isinstance(result["explanation"]["anomalous_features"], list)
+    af0 = result["explanation"]["anomalous_features"][0]
+    assert af0["feature"] == "mn_pct"
+    # Evidence list is the worker's *own* objective out-of-range list,
+    # independent of what the LLM said. Type-check only — composition
+    # is mid-range so the list may legitimately be empty.
+    assert isinstance(result["evidence"], list)
+    assert isinstance(result["duration_s"], (int, float))
+    assert result["decision_log_id"] is None  # opt-in, was False
+
+    # Factory was invoked exactly once.
+    explainer_mock.explain.assert_called_once()
+    # Context dict passed to the explainer must include the canonical
+    # fields the AnomalyExplainer prompt depends on.
+    ctx_arg = explainer_mock.explain.call_args.args[0]
+    assert ctx_arg["steel_class"] == "pipe_hsla"
+    assert "training_ranges" in ctx_arg
+    assert "ml_prediction" in ctx_arg
+    assert ctx_arg["ood_flag"] is True
+
+
+def test_anomaly_explain_decision_log_save(
+    populated_models_dir: Path,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    _ensure_api_key: None,
+    reset_job_store_singleton: None,
+) -> None:
+    """save_to_decision_log=True → entry written with tag 'anomaly_cycle'.
+
+    Same wrapping technique as test_api_hypotheses — capture the
+    invocation + redirect ``db_path`` to a tmp DB so the production
+    schema is exercised verbatim.
+    """
+    _patch_anomaly_factory(monkeypatch)
+
+    tmp_db = tmp_path / "decisions.db"
+    import decision_log.logger as log_mod
+
+    captured: list[dict] = []
+    real_log_decision = log_mod.log_decision
+
+    def _wrapped(*args: object, **kwargs: object) -> int:
+        kwargs["db_path"] = tmp_db
+        captured.append({"args": args, "kwargs": kwargs})
+        return real_log_decision(*args, **kwargs)
+
+    monkeypatch.setattr(log_mod, "log_decision", _wrapped)
+
+    version = next(populated_models_dir.iterdir()).name
+    composition = _midrange_composition("pipe_hsla")
+
+    resp = client.post(
+        "/api/predict/anomaly-explain",
+        json=_baseline_anomaly_payload(
+            version=version,
+            composition=composition,
+            save_to_decision_log=True,
+        ),
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+
+    body = _wait_for_job(client, job_id, timeout=10.0)
+    assert body["status"] == "done", body
+    result = body["result"]
+    assert result["decision_log_id"] is not None
+    assert isinstance(result["decision_log_id"], int)
+
+    # The cycle entry must have been logged with the dedicated tag.
+    cycle_calls = [
+        c for c in captured
+        if "anomaly_cycle" in (c["kwargs"].get("tags") or [])
+    ]
+    assert len(cycle_calls) == 1
+
+    # Verify the entry actually landed in the tmp DB.
+    import sqlite3
+
+    conn = sqlite3.connect(tmp_db)
+    try:
+        rows = list(conn.execute(
+            "SELECT phase, decision, tags, author FROM decisions WHERE id = ?",
+            (result["decision_log_id"],),
+        ))
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    phase, decision, tags_json, author = rows[0]
+    assert phase == "validation"
+    assert "Anomaly explanation" in decision
+    assert "anomaly_cycle" in tags_json
+    assert author == "api"

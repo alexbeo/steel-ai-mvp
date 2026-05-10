@@ -1,17 +1,24 @@
-// Tab 03 — Прогноз. Class-aware composition form + /api/predict.
+// Tab 03 — Прогноз. Class-aware composition form + /api/predict + anomaly explainer.
 //
-// Streamlit parity reference: app/frontend/app.py lines 685-791.
+// Streamlit parity reference: app/frontend/app.py lines 685-901.
 // Data flow:
 //   GET  /api/system/models                  → {items, count}
 //   GET  /api/system/models/active           → model meta (404 if none)
 //   GET  /api/system/steel-classes           → {items, count}
 //   POST /api/predict {model_version, composition}
 //                                            → {prediction, ood, derived, model}
+//   POST /api/predict/anomaly-explain        → {job_id} → poll /api/jobs/{id}
+//                                            → {explanation, evidence, …}
 //
-// PR 3 of the Streamlit→FastAPI migration. See
+// PR 3 of the Streamlit→FastAPI migration introduced the prediction shell
+// with a *placeholder* OOD warning (disabled button). PR 12 wires the button
+// up to a real anomaly-explainer job and adds the wide-CI heuristic so the
+// button also surfaces on non-OOD predictions whose 90% CI is wide relative
+// to the target's normal range. See
 // docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md.
 
 import { apiFetch, ApiError } from '../api.js';
+import { pollJob, renderJobProgress } from '../components/job-progress.js';
 import { el } from '../utils/dom.js';
 
 /** Module-scoped state. Re-init() resets it. */
@@ -22,6 +29,13 @@ const state = {
   loading: false,
   predicting: false,
   lastResult: null,
+  // PR 12 — anomaly explainer state. Decoupled from predict state so a
+  // user can submit a prediction, click «Объяснить», cancel mid-flight,
+  // and run another prediction without losing the form values.
+  explaining: false,
+  lastExplain: null, // {explanation, evidence, ...} from /predict/anomaly-explain job
+  explainError: null,
+  explainAbort: null, // AbortController for in-flight job poll
 };
 
 let elements = null;
@@ -338,6 +352,12 @@ async function runPredict() {
 
   clearError();
   state.predicting = true;
+  // Reset any prior anomaly-explainer state — running a new prediction
+  // implicitly invalidates the previous diagnosis, and a stale explain
+  // panel under a fresh prediction is misleading.
+  cancelExplainIfRunning();
+  state.lastExplain = null;
+  state.explainError = null;
   elements.predictBtn.disabled = true;
   elements.predictBtn.textContent = 'Прогнозирование…';
   try {
@@ -357,6 +377,266 @@ async function runPredict() {
     elements.predictBtn.disabled = false;
     elements.predictBtn.textContent = 'Прогноз';
   }
+}
+
+// -------------------- anomaly explainer --------------------
+
+/** Cancel any in-flight pollJob (no-op when nothing is running). */
+function cancelExplainIfRunning() {
+  if (state.explainAbort) {
+    try { state.explainAbort.abort(); } catch (_e) { /* ignore */ }
+    state.explainAbort = null;
+  }
+  state.explaining = false;
+}
+
+/** Build the OOD/wide-CI warning block + anomaly-explain entry point.
+ *
+ * Visible whenever ``data.ood.is_ood || data.prediction.wide_ci``. The
+ * banner copy adapts: pure OOD shows a strong warning; wide-CI-only
+ * uses softer "точка близка к границе training distribution" wording.
+ *
+ * The button toggles a sub-section that holds either the spinner+progress
+ * card (during the job), an error message, or the explanation card.
+ * State machine driven by ``state.explaining`` / ``state.lastExplain``.
+ */
+function buildAnomalyTriggerBlock({ isOod, isWideCi }) {
+  const title = isOod
+    ? 'Внимание: состав вне training distribution'
+    : 'Внимание: широкий доверительный интервал';
+  const body = isOod
+    ? 'Прогноз ненадёжен — точка лежит за пределами области, где модель училась. ' +
+      'Рекомендуется скорректировать состав или собрать дополнительные данные.'
+    : 'Доверительный интервал шире половины целевого диапазона свойства — модель ' +
+      'не уверена в этой точке. PhD-диагностика подскажет, какие признаки рискованны.';
+
+  const explainBtn = el(
+    'button',
+    {
+      class: 'btn primary',
+      type: 'button',
+      onClick: () => runAnomalyExplain(),
+    },
+    'Объяснить почему рискованно',
+  );
+
+  // Mount point — runAnomalyExplain replaces children with the
+  // job-progress card / error / result card.
+  const mount = el('div', { class: 'predict-explain-mount' });
+
+  // Restore any previously rendered explanation when re-rendering.
+  if (state.explaining) {
+    explainBtn.disabled = true;
+    explainBtn.textContent = 'PhD-диагностика…';
+  } else if (state.lastExplain) {
+    mount.append(buildExplanationCard(state.lastExplain));
+    explainBtn.textContent = 'Запустить ещё раз';
+  } else if (state.explainError) {
+    mount.append(
+      el(
+        'div',
+        { class: 'predict-explain-error', role: 'alert' },
+        state.explainError,
+      ),
+    );
+  }
+
+  return el(
+    'div',
+    { class: 'predict-ood-warning' },
+    el('div', { class: 'predict-ood-title' }, title),
+    el('div', { class: 'predict-ood-body' }, body),
+    el(
+      'div',
+      { class: 'predict-ood-actions' },
+      explainBtn,
+      el(
+        'span',
+        { class: 'predict-ood-hint' },
+        'Анализ ~30-60 с, ~$0.05-0.07 за вызов.',
+      ),
+    ),
+    mount,
+  );
+}
+
+/** Submit POST /api/predict/anomaly-explain → poll job → render result. */
+async function runAnomalyExplain() {
+  if (!elements) return;
+  if (state.explaining) return;
+  const data = state.lastResult;
+  const model = activeModel();
+  if (!data || !model) return;
+
+  let composition;
+  try {
+    composition = readComposition();
+  } catch (err) {
+    state.explainError = err.message;
+    renderResult();
+    return;
+  }
+
+  state.explaining = true;
+  state.lastExplain = null;
+  state.explainError = null;
+  renderResult();
+
+  // Mount the progress card on the (now re-created) explain mount.
+  const mount = elements.resultContainer.querySelector(
+    '.predict-explain-mount',
+  );
+  if (!mount) {
+    state.explaining = false;
+    return;
+  }
+  mount.replaceChildren();
+
+  const abort = new AbortController();
+  state.explainAbort = abort;
+
+  const progress = renderJobProgress(mount, {
+    label: 'PhD-диагностика аномалии',
+    onCancel: () => {
+      // Best-effort cancel: abort the poll loop AND fire DELETE so the
+      // backend cooperative cancellation flag flips.
+      cancelExplainIfRunning();
+      // Don't await — the poll is already aborted, the DELETE is
+      // purely a backend signal; the user gets immediate feedback.
+      // We don't have job_id here yet (closure scope), so the abort
+      // alone covers the UI side; the worker may still finish in the
+      // background but the UI ignores the result.
+    },
+  });
+
+  try {
+    const submit = await apiFetch('/api/predict/anomaly-explain', {
+      method: 'POST',
+      body: {
+        model_version: model.version,
+        composition,
+        predicted_mean: Number(data.prediction.mean),
+        predicted_q05: Number(data.prediction.q05),
+        predicted_q95: Number(data.prediction.q95),
+        is_ood: Boolean(data.ood && data.ood.is_ood),
+        save_to_decision_log: false,
+      },
+    });
+    const jobId = submit.job_id;
+
+    const result = await pollJob(jobId, {
+      signal: abort.signal,
+      onProgress: progress.updateProgress,
+      onMessage: progress.updateMessage,
+    });
+    progress.markDone('Готово');
+    state.lastExplain = result;
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      // User-initiated cancel — leave the result panel empty without an error.
+      state.explainError = null;
+    } else {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      state.explainError = `Ошибка диагностики: ${detail}`;
+      try { progress.markError(detail); } catch (_e) { /* ignore */ }
+    }
+  } finally {
+    state.explaining = false;
+    state.explainAbort = null;
+    renderResult();
+  }
+}
+
+/** Build the explanation panel from a completed job result.
+ *
+ * Mirrors Streamlit lines 869-901 — severity badge, summary, anomalous
+ * features list, mechanism concerns, production risks, suggested
+ * correction. Falls back to an "Объяснение не получено" notice when
+ * ``result.explanation`` is null (LLM call failed silently).
+ */
+function buildExplanationCard(result) {
+  if (!result || !result.explanation) {
+    return el(
+      'div',
+      { class: 'predict-explain-error', role: 'alert' },
+      'Объяснение не получено — попробуйте ещё раз.',
+    );
+  }
+  const exp = result.explanation;
+
+  const sevLabel = { LOW: 'НИЗКАЯ', MEDIUM: 'СРЕДНЯЯ', HIGH: 'ВЫСОКАЯ' }[
+    exp.severity
+  ] || exp.severity;
+  const sevClass = `predict-explain-severity sev-${(exp.severity || 'low').toLowerCase()}`;
+
+  const blocks = [
+    el('div', { class: sevClass }, `Опасность: ${sevLabel}`),
+    el('p', { class: 'predict-explain-summary' }, exp.summary || ''),
+  ];
+
+  if (Array.isArray(exp.anomalous_features) && exp.anomalous_features.length > 0) {
+    const items = exp.anomalous_features.map((af) =>
+      el(
+        'li',
+        {},
+        el('code', {}, af.feature),
+        ` = ${formatNumber(af.value, 4)} `,
+        el(
+          'span',
+          { class: 'predict-explain-range mono' },
+          `(training [${formatNumber(af.training_range && af.training_range[0], 4)}, ` +
+            `${formatNumber(af.training_range && af.training_range[1], 4)}])`,
+        ),
+        el('div', { class: 'predict-explain-note' }, af.note || ''),
+      ),
+    );
+    blocks.push(
+      el('div', { class: 'predict-explain-section-title' }, 'Аномальные параметры'),
+      el('ul', { class: 'predict-explain-list' }, ...items),
+    );
+  }
+
+  if (Array.isArray(exp.mechanism_concerns) && exp.mechanism_concerns.length > 0) {
+    blocks.push(
+      el(
+        'div',
+        { class: 'predict-explain-section-title' },
+        'Возможные металлургические проблемы',
+      ),
+      el(
+        'ul',
+        { class: 'predict-explain-list' },
+        ...exp.mechanism_concerns.map((c) => el('li', {}, c)),
+      ),
+    );
+  }
+
+  if (exp.production_risks) {
+    blocks.push(
+      el('div', { class: 'predict-explain-section-title' }, 'Производственные риски'),
+      el('p', { class: 'predict-explain-paragraph' }, exp.production_risks),
+    );
+  }
+
+  if (exp.suggested_correction) {
+    blocks.push(
+      el('div', { class: 'predict-explain-section-title' }, 'Рекомендуемая правка'),
+      el('p', { class: 'predict-explain-paragraph' }, exp.suggested_correction),
+    );
+  }
+
+  // Compact duration footer — same style as recipe / hypotheses panels.
+  if (typeof result.duration_s === 'number') {
+    blocks.push(
+      el(
+        'div',
+        { class: 'predict-explain-footer mono' },
+        `Длительность: ${formatNumber(result.duration_s, 1)} с`,
+      ),
+    );
+  }
+
+  return el('div', { class: 'predict-explain-card' }, ...blocks);
 }
 
 function renderResult() {
@@ -403,34 +683,14 @@ function renderResult() {
 
   const blocks = [headline];
 
-  // OOD warning + placeholder for PR 12 anomaly explainer.
-  if (data.ood && data.ood.is_ood) {
-    const oodBlock = el(
-      'div',
-      { class: 'predict-ood-warning' },
-      el(
-        'div',
-        { class: 'predict-ood-title' },
-        'Внимание: состав вне training distribution',
-      ),
-      el(
-        'div',
-        { class: 'predict-ood-body' },
-        'Прогноз ненадёжен — точка лежит за пределами области, где модель училась. ' +
-          'Рекомендуется скорректировать состав или собрать дополнительные данные.',
-      ),
-      el(
-        'button',
-        {
-          class: 'btn',
-          type: 'button',
-          disabled: '',
-          title: 'Доступно после PR 12 миграции',
-        },
-        'Объяснить почему рискованно (доступно после PR 12)',
-      ),
-    );
-    blocks.push(oodBlock);
+  // PR 12: show the OOD/wide-CI banner + anomaly-explain button when
+  // the prediction is OOD OR the CI is wide vs the target's normal
+  // range (Streamlit parity, app.py:793-803). We render the banner as
+  // long as either trigger fires; the title/body wording adapts.
+  const isOod = Boolean(data.ood && data.ood.is_ood);
+  const isWideCi = Boolean(data.prediction && data.prediction.wide_ci);
+  if (isOod || isWideCi) {
+    blocks.push(buildAnomalyTriggerBlock({ isOod, isWideCi }));
   }
 
   // Derived HSLA features (cev_iiw / pcm / cen / microalloying_sum).
@@ -511,6 +771,13 @@ export function init(container) {
   state.loading = false;
   state.predicting = false;
   state.lastResult = null;
+  state.explaining = false;
+  state.lastExplain = null;
+  state.explainError = null;
+  if (state.explainAbort) {
+    try { state.explainAbort.abort(); } catch (_e) { /* ignore */ }
+    state.explainAbort = null;
+  }
 
   const skeleton = buildSkeleton();
   elements = skeleton;
