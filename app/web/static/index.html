@@ -157,6 +157,38 @@
         </div>
       </section>
     </main>
+
+    <!-- ───────── Footer thermal strip ─────────
+         Always-on chrome element sitting below the nav + main grid.
+         Decorative (R-001 Step 4 visual polish): the gradient bar is a
+         qualitative "thermal" reading and the marker positions are
+         hand-set placeholders — when a real LF heat is wired up
+         (out of scope for this PR), the marker percentages will be
+         driven from /api/system/kpi or a similar endpoint. -->
+    <footer class="thermal-footer" data-region="thermal-footer" aria-label="Тепловой профиль">
+      <div>
+        <div class="label">
+          Тепловой профиль ладля
+          <span class="val">tap → SEN</span>
+        </div>
+      </div>
+      <div>
+        <div class="thermal-bar">
+          <div class="marker" style="left:8%"></div>
+          <div class="marker" style="left:32%"></div>
+          <div class="marker" style="left:56%"></div>
+          <div class="marker" style="left:78%"></div>
+          <div class="marker" style="left:94%"></div>
+        </div>
+        <div class="thermal-scale">
+          <span>1500</span><span>1540</span><span>1580</span><span>1620</span><span>1660 °C</span>
+        </div>
+      </div>
+      <div class="hint">
+        <span class="dot"></span>
+        <span>liquidus T<sub>L</sub> ≈ 1502 °C</span>
+      </div>
+    </footer>
   </div>
 </body>
 </html>

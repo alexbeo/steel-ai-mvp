@@ -17,7 +17,7 @@
 // docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md.
 
 import { apiFetch, ApiError } from '../api.js';
-import { el } from '../utils/dom.js';
+import { el, skeletonRow } from '../utils/dom.js';
 import { buildCsv, downloadCsv } from '../utils/csv.js';
 
 // ──────────────────── module state ────────────────────
@@ -422,6 +422,14 @@ async function runPropose() {
   elements.proposeBtn.disabled = true;
   elements.proposeBtn.textContent = 'Считаем…';
   elements.busyLabel.hidden = false;
+  // Visual polish: render skeleton-rows in the result container while
+  // the request is in flight. Active-learning is fast (~150 ms) but the
+  // shimmer reads better than an empty pane on first call.
+  if (elements.resultContainer) {
+    const skel = el('div', { class: 'al-skeleton' });
+    for (let i = 0; i < 5; i += 1) skel.append(skeletonRow({ cols: 5 }));
+    elements.resultContainer.replaceChildren(skel);
+  }
 
   try {
     const data = await apiFetch('/api/active-learning/propose', {

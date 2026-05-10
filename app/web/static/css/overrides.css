@@ -3070,3 +3070,320 @@
   text-align: right;
 }
 
+
+/* ════════════════════════════════════════════════════════════════════
+   Visual polish (R-001 Step 4) — hover transitions, keyframes, target
+   band SVG, footer thermal strip. All decorative; никак не меняет
+   структуру DOM или backend payloads. Базовая палитра — те же oklch-
+   токены из app.css. Длительности transition: 150–200 ms ease-out.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ───── Keyframes ───── */
+
+@keyframes shimmer {
+  0%   { background-position: -120% 0; }
+  100% { background-position:  220% 0; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+@keyframes view-fade-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* ───── Hover transitions для interactive surfaces ───── */
+
+.nav-item {
+  transition: background 160ms ease-out, color 160ms ease-out, border-color 160ms ease-out;
+}
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--fg);
+  border-color: var(--border);
+}
+.nav-item:hover .nav-mark {
+  color: var(--fg-2);
+  border-color: var(--border-strong);
+}
+
+.btn {
+  transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, transform 120ms ease-out;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+
+/* KPI cards в topbar — лёгкое hover-подсвечивание (без layout-shift). */
+[data-region="kpi-strip"] .meta-cell {
+  transition: background 160ms ease-out;
+  padding: 4px 8px;
+  margin: -4px -2px;
+  border-radius: 3px;
+}
+[data-region="kpi-strip"] .meta-cell:hover {
+  background: var(--surface-2);
+}
+
+/* Generic row hover — covers history, candidate, decision-log, log-row.
+   Existing :hover rules in app.css/overrides.css remain; we just add a
+   smooth transition вместо мгновенного flash. */
+.log-row,
+table.candidate-table tr,
+.history-row,
+.decision-log-row {
+  transition: background 150ms ease-out;
+}
+
+/* ───── Pulse animation для status pills ───── */
+
+/* Базовая «живая» индикация для активных pills/status-tags. По умолчанию
+   стоит только на индикаторе первой pill: ::before. Через class .pulse
+   можно отключать/включать у конкретных. */
+.pill::before,
+.status-tag::before {
+  animation: pulse 2.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.pill.no-pulse::before,
+.status-tag.no-pulse::before {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill::before,
+  .status-tag::before {
+    animation: none;
+  }
+}
+
+/* ───── Loading skeletons (shimmer) ───── */
+
+.skeleton {
+  display: block;
+  position: relative;
+  background: linear-gradient(
+    90deg,
+    var(--surface)   0%,
+    var(--surface-2) 40%,
+    var(--surface-3) 50%,
+    var(--surface-2) 60%,
+    var(--surface)   100%
+  );
+  background-size: 220% 100%;
+  background-position: -120% 0;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  min-height: 12px;
+  color: transparent;
+  user-select: none;
+}
+
+.skeleton-row {
+  display: grid;
+  grid-template-columns: 124px 100px 1.4fr 220px 90px 100px;
+  gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+.skeleton-row > .skeleton { height: 12px; }
+.skeleton-row:last-child { border-bottom: 0; }
+
+.skeleton-block {
+  height: 14px;
+  margin-bottom: 8px;
+}
+.skeleton-block.lg { height: 22px; margin-bottom: 12px; }
+.skeleton-block.sm { height: 10px; margin-bottom: 6px; }
+.skeleton-block.w-25 { width: 25%; }
+.skeleton-block.w-50 { width: 50%; }
+.skeleton-block.w-75 { width: 75%; }
+.skeleton-block.w-100 { width: 100%; }
+
+.skeleton-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--surface-2);
+  }
+}
+
+/* ───── View transitions (fade при переключении вкладок) ───── */
+
+.main [data-view] {
+  display: none;
+}
+.main [data-view].active {
+  display: block;
+  animation: view-fade-in 220ms ease-out;
+  will-change: opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .main [data-view].active { animation: none; }
+}
+
+/* ───── Targets quick band visualization (Дизайн tab) ───── */
+
+.design-target-band {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.design-target-band-title {
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.design-target-band-row {
+  display: grid;
+  grid-template-columns: 56px 1fr 64px;
+  align-items: center;
+  gap: 10px;
+}
+
+.design-target-band-row .lbl {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.design-target-band-row .val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg);
+  text-align: right;
+}
+
+.design-target-band-row svg.target-band-svg {
+  display: block;
+  width: 100%;
+  height: 14px;
+  overflow: visible;
+}
+
+/* ───── Candidate row hover lift (NSGA Pareto table, see chart-wrap) ───── */
+
+table.candidate-table tr.candidate-row {
+  transition: background 150ms ease-out, box-shadow 150ms ease-out;
+}
+table.candidate-table tr.candidate-row:hover td {
+  background: var(--surface-2);
+}
+table.candidate-table tr.candidate-row:hover td:first-child {
+  box-shadow: inset 2px 0 0 0 var(--accent-line);
+}
+
+/* ───── Footer thermal strip (постоянная нижняя полоска) ─────
+   Spans both columns of the .app grid as a third row, sitting below
+   nav + main. Background matches surface so the bar reads as a chrome
+   element, not part of any tab. */
+
+.app { grid-template-rows: 52px 1fr auto; }
+
+.thermal-footer {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: 220px 1fr 220px;
+  align-items: center;
+  gap: 22px;
+  padding: 10px 28px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.thermal-footer .label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+
+.thermal-footer .label .val {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg-2);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.thermal-bar {
+  height: 8px;
+  background: linear-gradient(
+    90deg,
+    oklch(35% 0.05 240) 0%,
+    oklch(50% 0.10 240) 14%,
+    oklch(60% 0.13 200) 28%,
+    oklch(70% 0.14 130) 42%,
+    oklch(82% 0.16 90) 58%,
+    oklch(74% 0.18 60) 72%,
+    oklch(64% 0.20 40) 86%,
+    oklch(55% 0.22 25) 100%
+  );
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.thermal-bar .marker {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  background: var(--fg);
+  box-shadow: 0 0 0 1.5px var(--bg);
+  transition: left 220ms ease-out;
+}
+
+.thermal-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted-2);
+}
+
+.thermal-footer .hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.thermal-footer .hint .dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thermal-footer .hint .dot { animation: none; }
+}
+

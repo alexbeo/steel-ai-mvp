@@ -8,7 +8,7 @@
 // docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md.
 
 import { apiFetch, ApiError } from '../api.js';
-import { el } from '../utils/dom.js';
+import { el, skeletonRow, skeletonStack } from '../utils/dom.js';
 import { decisionLogRow } from '../components/decision-log-row.js';
 
 // Phases mirror pattern_library.patterns.Phase. "deoxidation" is a valid
@@ -139,22 +139,32 @@ function buildSkeleton() {
   );
 
   // Summary block — fed by GET /api/decisions/summary.
+  // Initial state: shimmer placeholder; replaced by real text once
+  // /api/decisions/summary returns. We keep the <pre> node (so its
+  // styling stays valid) but render skeletonStack inside it instead of
+  // a stray "Загрузка…" string.
+  const summaryBody = el('pre', {
+    class: 'history-summary-body mono',
+    id: 'history-summary-body',
+  });
+  summaryBody.append(skeletonStack(3));
   const summaryBlock = el(
     'div',
     { class: 'history-summary' },
     el('div', { class: 'history-summary-label' }, 'Сводка проекта'),
-    el(
-      'pre',
-      { class: 'history-summary-body mono', id: 'history-summary-body' },
-      'Загрузка…',
-    ),
+    summaryBody,
   );
 
   // List + status + load-more footer.
+  // Initial state: render N skeleton rows so the panel has visible
+  // structure during the first /api/decisions fetch.
   const listContainer = el('div', {
     class: 'log-list',
     id: 'history-list',
   });
+  for (let i = 0; i < 5; i += 1) {
+    listContainer.append(skeletonRow({ cols: 6 }));
+  }
   const statusLine = el('div', { class: 'history-status' }, '');
   const loadMoreBtn = el(
     'button',
@@ -256,11 +266,14 @@ async function loadSummary() {
   try {
     const data = await apiFetch('/api/decisions/summary');
     if (elements && elements.summaryBody) {
+      // Replaces shimmer skeleton with the real markdown text.
+      elements.summaryBody.replaceChildren();
       elements.summaryBody.textContent = data.summary_md || '—';
     }
   } catch (err) {
     if (elements && elements.summaryBody) {
       const detail = err instanceof ApiError ? err.message : String(err);
+      elements.summaryBody.replaceChildren();
       elements.summaryBody.textContent = `Не удалось загрузить summary: ${detail}`;
     }
   }

@@ -293,6 +293,28 @@ function buildSkeleton() {
     ),
   );
 
+  // ─────────────────────────────────────────────────────────────────
+  // Targets quick band (visual polish, R-001 Step 4) — inline SVG that
+  // shows the chosen target σт-range as a horizontal coloured strip
+  // between the model's training-range bounds. Cheap re-render via
+  // `data-target-band` marker. Updated on input from min/max fields and
+  // on class change in `applyClassUi`.
+  // ─────────────────────────────────────────────────────────────────
+  const targetBandSvg = el('div', {
+    class: 'design-target-band-row',
+    'data-target-band': 'yt',
+  });
+  const targetBandSection = el(
+    'div',
+    { class: 'design-target-band' },
+    el('div', { class: 'design-target-band-title' }, 'Целевой диапазон vs допустимая шкала'),
+    targetBandSvg,
+  );
+
+  // Wire input listeners so the band re-renders as user types.
+  ytMinInput.addEventListener('input', () => updateTargetBand());
+  ytMaxInput.addEventListener('input', () => updateTargetBand());
+
   // Price editor mount point — populated after seed snapshot loads.
   const priceEditorMount = el('div', { class: 'design-price-editor' });
   const priceToggle = el(
@@ -331,6 +353,7 @@ function buildSkeleton() {
     { class: 'design-form-panel' },
     modelRow,
     targetGrid,
+    targetBandSection,
     priceWrap,
     actions,
     progressMount,
@@ -400,7 +423,83 @@ function buildSkeleton() {
     tableMount,
     breakdownMount,
     downloadBtn,
+    targetBandSvg,
   };
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Target band quick visualization (R-001 Step 4 — visual polish)
+// ──────────────────────────────────────────────────────────────────────
+//
+// Inline SVG strip. X-axis spans the active class' [scaleMin, scaleMax]
+// from CLASS_UI_META.minRange[0] / maxRange[1]. Highlighted rect = the
+// user's chosen target range. No data fetch, no Plotly — a hand-crafted
+// 14 px decorator that re-renders cheaply on input. Construction via
+// `document.createElementNS` so we don't go near `innerHTML`.
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    node.setAttribute(k, v === true ? '' : String(v));
+  }
+  return node;
+}
+
+function updateTargetBand() {
+  if (!elements || !elements.targetBandSvg) return;
+  const m = activeModel();
+  const meta = classMeta(m);
+  const scaleMin = meta.minRange ? meta.minRange[0] : 380;
+  const scaleMax = meta.maxRange ? meta.maxRange[1] : 900;
+  const span = Math.max(1, scaleMax - scaleMin);
+
+  const minRaw = parseFloat(elements.ytMinInput.value);
+  const maxRaw = parseFloat(elements.ytMaxInput.value);
+  const minVal = Number.isFinite(minRaw) ? minRaw : meta.minDefault;
+  const maxVal = Number.isFinite(maxRaw) ? maxRaw : meta.maxDefault;
+  // Defensive: if user inverted min/max, swap for the visual.
+  const lo = Math.max(scaleMin, Math.min(minVal, maxVal));
+  const hi = Math.min(scaleMax, Math.max(minVal, maxVal));
+
+  const leftPct = ((lo - scaleMin) / span) * 100;
+  const widthPct = Math.max(0.5, ((hi - lo) / span) * 100);
+
+  const targetLabel = meta.targetLabel || 'σт';
+  const targetUnit = meta.targetUnit || '';
+
+  const svg = svgEl('svg', {
+    class: 'target-band-svg',
+    viewBox: '0 0 100 14',
+    preserveAspectRatio: 'none',
+    role: 'img',
+    'aria-label': `Целевой диапазон ${lo.toFixed(0)} – ${hi.toFixed(0)} ${targetUnit}`,
+  });
+  svg.append(
+    svgEl('rect', {
+      x: '0', y: '5', width: '100', height: '4',
+      fill: 'oklch(20% 0.012 240)',
+      stroke: 'oklch(28% 0.012 240)',
+      'stroke-width': '0.5',
+    }),
+    svgEl('rect', {
+      x: leftPct.toFixed(2),
+      y: '3',
+      width: widthPct.toFixed(2),
+      height: '8',
+      fill: 'oklch(74% 0.16 60 / 0.32)',
+      stroke: 'oklch(74% 0.16 60)',
+      'stroke-width': '0.6',
+    }),
+  );
+
+  elements.targetBandSvg.replaceChildren(
+    el('span', { class: 'lbl' }, targetLabel),
+    svg,
+    el('span', { class: 'val' }, `${lo.toFixed(0)}–${hi.toFixed(0)} ${targetUnit}`.trim()),
+  );
 }
 
 function showError(msg) {
@@ -551,6 +650,10 @@ function applyClassUi(model) {
   if (pcmLabel) pcmLabel.hidden = !meta.showWeldability;
 
   state.lastClassMeta = meta;
+
+  // Visual polish: redraw the target-band SVG when the class changes
+  // (scale bounds + label/unit shift between HSLA and fatigue).
+  updateTargetBand();
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1164,5 +1267,8 @@ export function init(container) {
   const skeleton = buildSkeleton();
   elements = skeleton;
   container.replaceChildren(skeleton.root);
+  // Render initial target-band SVG with the HSLA defaults — gives the
+  // form a polished first paint even before /api/system/models resolves.
+  updateTargetBand();
   loadAll();
 }

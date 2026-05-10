@@ -18,7 +18,7 @@
 
 import { apiFetch, ApiError } from '../api.js';
 import { pollJob, renderJobProgress } from '../components/job-progress.js';
-import { el } from '../utils/dom.js';
+import { el, skeletonStack } from '../utils/dom.js';
 import {
   ANOMALY_EXPLAINER_LABELS,
   splitKeyedLine,
@@ -361,6 +361,14 @@ async function runPredict() {
   cancelExplainIfRunning();
   state.lastExplain = null;
   state.explainError = null;
+  // Visual polish: replace lastResult-rendered output with skeleton
+  // placeholder while the request is in flight. Cleared by renderResult()
+  // in the finally branch (success or error).
+  if (elements.resultContainer) {
+    elements.resultContainer.replaceChildren(
+      el('div', { class: 'predict-result' }, skeletonStack(4)),
+    );
+  }
   elements.predictBtn.disabled = true;
   elements.predictBtn.textContent = 'Прогнозирование…';
   try {
