@@ -3,9 +3,8 @@ title: Steel AI MVP
 emoji: 🔥
 colorFrom: red
 colorTo: indigo
-sdk: streamlit
-sdk_version: 1.56.0
-app_file: app/frontend/app.py
+sdk: docker
+app_port: 7860
 pinned: false
 license: mit
 short_description: Подбор состава стали + раскисление + диагностика рецептов через глубокую нейронную сеть
@@ -20,7 +19,7 @@ short_description: Подбор состава стали + раскислени
 
 ## Что внутри
 
-8 функциональных вкладок Streamlit:
+8 функциональных вкладок UI (FastAPI + vanilla JS):
 
 - **🎯 Дизайн сплава** — multi-objective NSGA-II под целевые свойства + минимум стоимости ферросплавов
 - **🤖 Обучение модели** — XGBoost + quantile regression + conformal calibration
@@ -41,7 +40,7 @@ PYTHONPATH=. uvicorn app.api.main:app --reload --port 8000
 
 Для функций с глубокой нейронной сетью (PhD-критик, hypothesis generator,
 recipe designer, anomaly explainer, deoxidation advisor) необходим
-`ANTHROPIC_API_KEY` в `.env` или в Streamlit Cloud / HF Spaces secrets.
+`ANTHROPIC_API_KEY` в `.env` или в HF Spaces secrets.
 
 ## Архитектурные особенности
 
