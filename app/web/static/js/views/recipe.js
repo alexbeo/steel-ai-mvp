@@ -31,6 +31,10 @@
 import { apiFetch, ApiError } from '../api.js';
 import { pollJob, renderJobProgress } from '../components/job-progress.js';
 import { el } from '../utils/dom.js';
+import {
+  RECIPE_CRITIC_LABELS,
+  splitKeyedLine,
+} from '../utils/llm_labels.js';
 
 const SUPPORTED_STEEL_CLASS = 'fatigue_carbon_steel';
 
@@ -654,6 +658,9 @@ function renderVerdictBlock(review) {
   const strengths = Array.isArray(review.strengths) ? review.strengths : [];
   const weaknesses = Array.isArray(review.weaknesses) ? review.weaknesses : [];
   if (strengths.length || weaknesses.length) {
+    // Критик иногда префиксует строки английским attack_vector ID
+    // (см. prompts/recipe_critic.md adversarial_mindset[].id) — парсим
+    // и переводим в русский label.
     blocks.push(el(
       'div',
       { class: 'recipe-twocol' },
@@ -662,7 +669,8 @@ function renderVerdictBlock(review) {
         {},
         el('strong', {}, 'Сильные стороны'),
         el('ul', { class: 'recipe-list' },
-          ...strengths.map((s) => el('li', {}, s)),
+          ...strengths.map((s) =>
+            el('li', {}, splitKeyedLine(s, RECIPE_CRITIC_LABELS))),
         ),
       ),
       el(
@@ -670,7 +678,8 @@ function renderVerdictBlock(review) {
         {},
         el('strong', {}, 'Слабые стороны'),
         el('ul', { class: 'recipe-list' },
-          ...weaknesses.map((w) => el('li', {}, w)),
+          ...weaknesses.map((w) =>
+            el('li', {}, splitKeyedLine(w, RECIPE_CRITIC_LABELS))),
         ),
       ),
     ));

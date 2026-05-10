@@ -19,6 +19,10 @@
 import { apiFetch, ApiError } from '../api.js';
 import { pollJob, renderJobProgress } from '../components/job-progress.js';
 import { el } from '../utils/dom.js';
+import {
+  ANOMALY_EXPLAINER_LABELS,
+  splitKeyedLine,
+} from '../utils/llm_labels.js';
 
 /** Module-scoped state. Re-init() resets it. */
 const state = {
@@ -596,6 +600,9 @@ function buildExplanationCard(result) {
   }
 
   if (Array.isArray(exp.mechanism_concerns) && exp.mechanism_concerns.length > 0) {
+    // LLM иногда префиксует строку именем failure_mode_catalog item
+    // (см. prompts/anomaly_explainer.md role.failure_mode_catalog[].name);
+    // splitKeyedLine переводит prefix в русский label.
     blocks.push(
       el(
         'div',
@@ -605,7 +612,8 @@ function buildExplanationCard(result) {
       el(
         'ul',
         { class: 'predict-explain-list' },
-        ...exp.mechanism_concerns.map((c) => el('li', {}, c)),
+        ...exp.mechanism_concerns.map((c) =>
+          el('li', {}, splitKeyedLine(c, ANOMALY_EXPLAINER_LABELS))),
       ),
     );
   }

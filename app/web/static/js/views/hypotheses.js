@@ -27,6 +27,10 @@
 import { apiFetch, ApiError } from '../api.js';
 import { pollJob, renderJobProgress } from '../components/job-progress.js';
 import { el } from '../utils/dom.js';
+import {
+  HYPOTHESIS_CRITIC_LABELS,
+  splitKeyedLine,
+} from '../utils/llm_labels.js';
 
 // ──────────────────── module state ────────────────────
 
@@ -551,6 +555,9 @@ function renderVerdictBlock(review) {
   const strengths = Array.isArray(review.strengths) ? review.strengths : [];
   const weaknesses = Array.isArray(review.weaknesses) ? review.weaknesses : [];
   if (strengths.length || weaknesses.length) {
+    // Critic иногда возвращает строки в формате "attack_vector_id: text"
+    // (см. prompts/hypothesis_critic.md adversarial_mindset[].id); парсим
+    // prefix и переводим английский ID на русский label.
     blocks.push(el(
       'div',
       { class: 'hypotheses-twocol' },
@@ -559,7 +566,8 @@ function renderVerdictBlock(review) {
         {},
         el('strong', {}, 'Сильные стороны'),
         el('ul', { class: 'hypotheses-list' },
-          ...strengths.map((s) => el('li', {}, s)),
+          ...strengths.map((s) =>
+            el('li', {}, splitKeyedLine(s, HYPOTHESIS_CRITIC_LABELS))),
         ),
       ),
       el(
@@ -567,7 +575,8 @@ function renderVerdictBlock(review) {
         {},
         el('strong', {}, 'Слабые стороны'),
         el('ul', { class: 'hypotheses-list' },
-          ...weaknesses.map((w) => el('li', {}, w)),
+          ...weaknesses.map((w) =>
+            el('li', {}, splitKeyedLine(w, HYPOTHESIS_CRITIC_LABELS))),
         ),
       ),
     ));
