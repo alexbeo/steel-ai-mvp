@@ -24,8 +24,8 @@ PYTHONPATH=. .venv/bin/python scripts/smoke_test.py
 ## 1. Запуск UI
 
 ```bash
-PYTHONPATH=. .venv/bin/streamlit run app/frontend/app.py
-# Откройте http://localhost:8501
+PYTHONPATH=. uvicorn app.api.main:app --reload --port 8000
+# Откройте http://localhost:8000
 ```
 
 Для Docker-варианта:
@@ -358,9 +358,9 @@ Bar chart снизу наглядно показывает разницу. По�
 - Либо реальный угар на ковше выше заложенных 20% (попробуйте 30-35% в Inverse-форме).
 - Либо O-анализатор нуждается в калибровке (проверьте с Celox-пробой).
 
-### Как остановить Streamlit
+### Как остановить uvicorn
 ```bash
-lsof -ti:8501 | xargs kill
+lsof -ti:8000 | xargs kill
 ```
 
 ### Где хранятся данные

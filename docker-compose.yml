@@ -3,8 +3,9 @@ version: "3.9"
 services:
   steel-ai:
     build: .
+    # FastAPI on :8000 (Streamlit on :8501 was decommissioned in PR 13).
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./models:/app/models

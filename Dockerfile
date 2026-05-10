@@ -17,6 +17,8 @@ COPY . .
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Streamlit
-EXPOSE 8501
-CMD ["streamlit", "run", "app/frontend/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# FastAPI + vanilla JS UI (Streamlit decommissioned in PR 13).
+# A dedicated Dockerfile.api with multi-stage build + non-root user lands in
+# PR 14 of the migration; this stop-gap keeps `docker-compose up` working.
+EXPOSE 8000
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

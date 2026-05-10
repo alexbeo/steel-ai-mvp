@@ -35,7 +35,8 @@ short_description: Подбор состава стали + раскислени
 
 ```bash
 pip install -r requirements.txt
-PYTHONPATH=. streamlit run app/frontend/app.py
+PYTHONPATH=. uvicorn app.api.main:app --reload --port 8000
+# → http://localhost:8000/
 ```
 
 Для функций с глубокой нейронной сетью (PhD-критик, hypothesis generator,

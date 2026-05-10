@@ -13,8 +13,8 @@ pip install -r requirements.txt
 # End-to-end smoke test (~1-2 мин, обязательная проверка после изменений)
 PYTHONPATH=. python scripts/smoke_test.py
 
-# Streamlit UI
-PYTHONPATH=. streamlit run app/frontend/app.py           # localhost:8501
+# FastAPI + vanilla JS UI (Streamlit удалён в PR 13 миграции — см. docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md)
+PYTHONPATH=. uvicorn app.api.main:app --reload --port 8000   # http://localhost:8000/
 
 # CLI-pipeline через Orchestrator + Critic (с human-in-the-loop)
 PYTHONPATH=. python scripts/run_pipeline.py --full
@@ -22,7 +22,7 @@ PYTHONPATH=. python scripts/run_pipeline.py --step data      # только data
 PYTHONPATH=. python scripts/run_pipeline.py --step train     # только train
 PYTHONPATH=. python scripts/run_pipeline.py --step design --target-min 485 --target-max 580
 
-# Docker (одна команда — поднимает Streamlit с volumes для data/models/reports/decision_log)
+# Docker (одна команда — поднимает FastAPI с volumes для data/models/reports/decision_log)
 docker-compose up --build
 
 # Одиночный модуль как demo (большинство backend-файлов имеют __main__ dry-run)
@@ -120,9 +120,10 @@ UI — вкладка «🔥 Раскисление» с 3 sub-tabs (Forward / I
 
 ### UI и API
 
-- `app/frontend/app.py` — Streamlit с **8 вкладками** (Дизайн, Обучение, Прогноз, Раскисление, Гипотезы, Подбор рецепта, Следующие эксперименты, История). Сам импортирует функции напрямую из `app/backend/*` — не через Orchestrator. Для быстрого UX обучение/дизайн запускаются синхронно с прогресс-баром.
-- `app/backend/` содержит намёки на FastAPI, но отдельного `api.py` сейчас нет — FastAPI-слой не реализован.
-- Streamlit опирается на наличие обученных моделей в `models/<version>/`. Если моделей нет — сначала вкладка «Обучение модели».
+- UI = **FastAPI + vanilla JS** на `app/api/main.py:app` (запуск `uvicorn app.api.main:app --port 8000`, открыть `http://localhost:8000/`). Streamlit удалён в PR 13 миграции (см. `docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md`).
+- 8 вкладок (роуты hash-based в `app/web/static/js/router.js`): Дизайн, Обучение, Прогноз, Раскисление (с AI sub-tab), Гипотезы, Подбор рецепта, Следующие эксперименты, История.
+- Backend: `app/api/routers/*.py` — REST API. Frontend: `app/web/static/` (HTML + ES modules + CSS, без сборщика). Топбар KPI tирует `/api/system/kpi` каждые 60 с (см. `app/web/static/js/components/topbar.js`).
+- API-эндпоинты опираются на наличие обученных моделей в `models/<version>/`. Если моделей нет — UI показывает баннер «Обучите модель в вкладке Обучение», `/api/system/models/active` отвечает 404.
 - AI-вкладки требуют `ANTHROPIC_API_KEY` в `.env` (gitignored). Без ключа отображают warning и degrade gracefully.
 
 ### AI integration roadmap — все 7 capabilities закрыты (2026-04-25)
