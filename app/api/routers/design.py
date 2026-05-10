@@ -20,9 +20,11 @@ through the generic ``/api/jobs/{id}`` endpoint as the spec recommends
 (DRY). The result payload exposed there is the dict returned by
 ``_run_design_job`` below, which is already shaped for the UI.
 
-PR 7 — class gate: only ``pipe_hsla`` models accepted. Other classes
-return 400 with a clear message; the UI surfaces the same restriction
-as an info banner upstream.
+Class gate: HSLA and fatigue_carbon_steel models accepted (HSLA via the
+hand-tuned narrow-band bounds, fatigue via class-profile physical_bounds
++ passthrough FE). Q&T (en10083_qt) returns 400 with a clear message —
+inverse design for the Q&T class is on the v2 backlog. The UI surfaces
+the same restriction as an info banner upstream.
 
 Risks #3 (SafeJSONResponse): the result dict carries numpy floats from
 NSGA-II / predict_with_uncertainty. ``response_class=SafeJSONResponse,
@@ -45,7 +47,9 @@ from app.backend.cost_model import (
     seed_snapshot,
 )
 from app.backend.inverse_designer import (
+    SUPPORTED_DESIGN_CLASSES,
     VARIABLE_BOUNDS_HSLA,
+    _bounds_for_class,
     run_inverse_design,
 )
 from app.backend.validator import validate_batch
@@ -54,9 +58,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Inverse design only runs for HSLA classes in this iteration. Other
-# classes (Q&T, fatigue) lack process-parameter bounds and would crash
-# pymoo on missing columns.
+# Inverse design supports HSLA (historical narrow-band) + fatigue_carbon_steel
+# (Agrawal NIMS 2014, real data) since 2026-05-10. en10083_qt is on the v2
+# backlog. ``SUPPORTED_DESIGN_CLASSES`` is the single source of truth — defined
+# in the backend module and re-exposed here for the class gate.
+SUPPORTED_STEEL_CLASSES: frozenset[str] = SUPPORTED_DESIGN_CLASSES
+
+# Kept for backward compat with any external import — same semantics as
+# before: "the canonical, originally-supported class". Tests still treat
+# pipe_hsla as the default in the populated_models_dir fixture.
 SUPPORTED_STEEL_CLASS = "pipe_hsla"
 
 # Default knob values for the request schema. The slider/number input
@@ -333,6 +343,7 @@ def _run_design_job(
     cost_mode: str,
     cev_max: float,
     pcm_max: float,
+    steel_class: str,
     progress: Any = None,
 ) -> dict[str, Any]:
     """Background worker — invoked through ``run_as_job``.
@@ -342,6 +353,13 @@ def _run_design_job(
     milestones because pymoo's ``minimize`` is a single blocking call —
     no per-generation hook is plumbed yet, so we can't stream true
     progress. The four-stage UX is honest about the abstraction.
+
+    ``steel_class`` is threaded straight through to ``run_inverse_design``
+    so the backend selects the correct bounds + feature engineering. For
+    non-HSLA classes ``cev_max``/``pcm_max`` are kept in the signature
+    only to feed ``_project_candidate``'s ``in_spec`` heuristic — the
+    caller passes safe-large defaults when the class has no weldability
+    constraint.
     """
     if callable(progress):
         progress(0.05, "Загрузка модели и проверка прайса")
@@ -355,6 +373,7 @@ def _run_design_job(
             n_generations=n_generations,
             price_snapshot=price_snapshot,
             cost_mode=cost_mode,  # type: ignore[arg-type]
+            steel_class=steel_class,
         )
     except PriceSnapshotIncomplete as exc:
         # Re-raise with a friendlier message — the worker's exception
@@ -456,7 +475,7 @@ def _run_design_job(
         },
         "model": {
             "version": model_version,
-            "steel_class": SUPPORTED_STEEL_CLASS,
+            "steel_class": steel_class,
         },
         "config": {
             "targets": targets,
@@ -516,13 +535,18 @@ def run_design(req: DesignRunRequest) -> dict[str, Any]:
 
     # -------- 2. Class gate --------------------------------------------
     steel_class = meta.get("steel_class") or system_router.LEGACY_STEEL_CLASS_FALLBACK
-    if steel_class != SUPPORTED_STEEL_CLASS:
+    if steel_class not in SUPPORTED_STEEL_CLASSES:
+        # en10083_qt и любые будущие классы — единая русская формулировка
+        # для UI banner + 400. "HSLA" сохранён в тексте для совместимости
+        # с историческим тестом test_design_run_class_gate_400 (assertion
+        # на подстроку "HSLA").
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Inverse design supported only for HSLA models in this "
-                f"iteration. Got steel_class='{steel_class}'. Use «Прогноз» "
-                f"tab for non-HSLA models."
+                f"Inverse design supported only for HSLA and "
+                f"fatigue_carbon_steel models in this iteration. "
+                f"Got steel_class='{steel_class}'. Use «Прогноз» tab for "
+                f"unsupported classes (Q&T scheduled for v2 backlog)."
             ),
         )
 
@@ -530,18 +554,33 @@ def run_design(req: DesignRunRequest) -> dict[str, Any]:
     snapshot = _resolve_price_snapshot(req)
 
     # -------- 4. Build NSGA-II inputs ----------------------------------
+    # Target dict keys onto the model's prediction target. HSLA →
+    # yield_strength_mpa, fatigue → fatigue_strength_mpa. The backend
+    # treats the value the model returns as the comparison target
+    # regardless of the key, but keeping the key honest helps the
+    # response payload stay self-describing.
+    target_id = meta.get("target") or "yield_strength_mpa"
     targets = {
-        # The model's target id drives the targets dict key — the backend
-        # zip the prediction to ``meta.target`` (see HSLADesignProblem._evaluate).
-        # For HSLA this is always yield_strength_mpa today.
-        meta.get("target") or "yield_strength_mpa": {
+        target_id: {
             "min": float(req.target.min),
             "max": float(req.target.max),
         }
     }
-    hard_constraints = _hard_constraints_dict(req.hard_constraints)
-    cev_max = hard_constraints["cev_iiw"]["max"]
-    pcm_max = hard_constraints["pcm"]["max"]
+
+    # Weldability constraints (CEV/Pcm) only make sense for HSLA — they
+    # depend on derived features computed by compute_hsla_features. For
+    # fatigue_carbon_steel we drop these from NSGA-II (no feasibility
+    # filtering on them) and pass safe-large caps to _project_candidate
+    # so its in_spec heuristic doesn't reject every candidate on a
+    # missing-derived-key (derived dict is empty for fatigue).
+    if steel_class == "pipe_hsla":
+        hard_constraints = _hard_constraints_dict(req.hard_constraints)
+        cev_max = hard_constraints["cev_iiw"]["max"]
+        pcm_max = hard_constraints["pcm"]["max"]
+    else:
+        hard_constraints = {}
+        cev_max = float("inf")
+        pcm_max = float("inf")
 
     # -------- 5. Submit job --------------------------------------------
     job_id = run_as_job(
@@ -555,12 +594,28 @@ def run_design(req: DesignRunRequest) -> dict[str, Any]:
         cost_mode=req.cost_mode,
         cev_max=cev_max,
         pcm_max=pcm_max,
+        steel_class=steel_class,
     )
 
-    # We deliberately do NOT use VARIABLE_BOUNDS_HSLA from the request —
-    # the design space is defined by the backend module, the API just
-    # picks targets/constraints/popsize. If a future PR introduces
-    # bounds-relaxation, this is the place to surface it.
+    # Echo back the bounds the worker will actually use — keeps the
+    # request → response round-trip self-describing when the user
+    # navigates away mid-run.
+    bounds_for_response = (
+        dict(VARIABLE_BOUNDS_HSLA)
+        if steel_class == "pipe_hsla"
+        else _bounds_for_class(steel_class)
+    )
+
+    # JSON cannot represent infinity — coerce to None for the echoed
+    # constraints (the worker keeps the float('inf') for its internal
+    # comparison). UI side already tolerates missing keys.
+    cev_echo: float | None = (
+        cev_max if cev_max != float("inf") else None
+    )
+    pcm_echo: float | None = (
+        pcm_max if pcm_max != float("inf") else None
+    )
+
     return {
         "job_id": job_id,
         "model_version": safe_version,
@@ -571,10 +626,12 @@ def run_design(req: DesignRunRequest) -> dict[str, Any]:
         "config": {
             "targets": targets,
             "hard_constraints": hard_constraints,
+            "cev_max": cev_echo,
+            "pcm_max": pcm_echo,
             "population_size": int(req.population_size),
             "n_generations": int(req.n_generations),
             "cost_mode": req.cost_mode if snapshot is not None else "legacy",
             "include_cost": snapshot is not None,
-            "variable_bounds": dict(VARIABLE_BOUNDS_HSLA),
+            "variable_bounds": bounds_for_response,
         },
     }

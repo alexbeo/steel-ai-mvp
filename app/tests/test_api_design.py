@@ -61,7 +61,11 @@ def _find_real_hsla_model() -> Path | None:
 
 
 def _find_real_non_hsla_model() -> Path | None:
-    """Locate a non-HSLA model dir for the class-gate test."""
+    """Locate a non-HSLA model dir for the class-gate test.
+
+    Picks any model whose steel_class is neither HSLA nor fatigue (i.e.
+    Q&T or future classes) — these are the ones the gate must reject.
+    """
     if not REAL_MODELS_DIR.is_dir():
         return None
     for entry in sorted(REAL_MODELS_DIR.iterdir(), key=lambda p: p.name):
@@ -74,7 +78,31 @@ def _find_real_non_hsla_model() -> Path | None:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if meta.get("steel_class") in (None, "pipe_hsla"):
+        if meta.get("steel_class") in (None, "pipe_hsla", "fatigue_carbon_steel"):
+            continue
+        if not _REQUIRED_MODEL_ARTIFACTS.issubset(
+            {p.name for p in entry.iterdir()}
+        ):
+            continue
+        return entry
+    return None
+
+
+def _find_real_fatigue_model() -> Path | None:
+    """Locate a fatigue_carbon_steel model dir for design tests."""
+    if not REAL_MODELS_DIR.is_dir():
+        return None
+    for entry in sorted(REAL_MODELS_DIR.iterdir(), key=lambda p: p.name):
+        if not entry.is_dir():
+            continue
+        meta_path = entry / "meta.json"
+        if not meta_path.is_file():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("steel_class") != "fatigue_carbon_steel":
             continue
         if not _REQUIRED_MODEL_ARTIFACTS.issubset(
             {p.name for p in entry.iterdir()}
@@ -113,7 +141,12 @@ def populated_models_dir(
 def populated_non_hsla_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Path]:
-    """Tmp MODELS_DIR with one non-HSLA model — for class-gate tests."""
+    """Tmp MODELS_DIR with one Q&T-or-similar (non-HSLA, non-fatigue) model.
+
+    Used to exercise the class gate — fatigue is now also supported, so
+    we deliberately synthesise an ``en10083_qt`` stub if the real repo
+    only has fatigue + HSLA classes.
+    """
     src = _find_real_non_hsla_model()
     if src is None:
         # Synthesise a minimal en10083_qt meta.json — class gate fires on
@@ -139,6 +172,23 @@ def populated_non_hsla_dir(
         monkeypatch.setattr(model_trainer, "MODELS_DIR", fake_dir)
         yield fake_dir
         return
+    fake_dir = tmp_path / "models"
+    fake_dir.mkdir()
+    dst = fake_dir / src.name
+    shutil.copytree(src, dst)
+    monkeypatch.setattr(system_router, "MODELS_DIR", fake_dir)
+    monkeypatch.setattr(model_trainer, "MODELS_DIR", fake_dir)
+    yield fake_dir
+
+
+@pytest.fixture()
+def populated_fatigue_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    """Tmp MODELS_DIR with one real fatigue_carbon_steel model copied in."""
+    src = _find_real_fatigue_model()
+    if src is None:
+        pytest.skip("No real fatigue_carbon_steel model in repo")
     fake_dir = tmp_path / "models"
     fake_dir.mkdir()
     dst = fake_dir / src.name
@@ -282,7 +332,7 @@ def test_design_run_invalid_pop_size_422(
 def test_design_run_class_gate_400(
     populated_non_hsla_dir: Path, client: TestClient
 ) -> None:
-    """Non-HSLA model is rejected at submit time, not silently in worker."""
+    """Q&T (non-HSLA, non-fatigue) is rejected at submit time, not silently in worker."""
     version = next(populated_non_hsla_dir.iterdir()).name
     resp = client.post(
         "/api/design/run",
@@ -293,7 +343,107 @@ def test_design_run_class_gate_400(
         },
     )
     assert resp.status_code == 400
-    assert "HSLA" in resp.json()["detail"]
+    # Detail must mention HSLA (historical assertion) AND surface the v2
+    # backlog hint for the user.
+    detail = resp.json()["detail"]
+    assert "HSLA" in detail
+    assert "fatigue_carbon_steel" in detail or "v2" in detail
+
+
+def test_design_run_fatigue_returns_job_id(
+    populated_fatigue_dir: Path, client: TestClient
+) -> None:
+    """Fatigue model: POST /run → {job_id} + steel_class echoed."""
+    version = next(populated_fatigue_dir.iterdir()).name
+    resp = client.post(
+        "/api/design/run",
+        json={
+            "model_version": version,
+            "target": {"min": 450, "max": 700},
+            "population_size": 10,
+            "n_generations": 1,
+            "include_cost": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "job_id" in body
+    assert body["model_version"] == version
+    assert body["steel_class"] == "fatigue_carbon_steel"
+    # Hard constraints must be empty for fatigue (CEV/Pcm dropped at API
+    # layer — they don't apply to non-HSLA classes).
+    assert body["config"]["hard_constraints"] == {}
+    assert body["config"]["cev_max"] is None
+    assert body["config"]["pcm_max"] is None
+    # Bounds must come from the YAML profile, not VARIABLE_BOUNDS_HSLA.
+    assert "carburizing_temp_c" in body["config"]["variable_bounds"]
+    assert "rolling_finish_temp" not in body["config"]["variable_bounds"]
+
+
+def test_design_run_fatigue_to_completion(
+    populated_fatigue_dir: Path, client: TestClient
+) -> None:
+    """Tiny NSGA-II run on the fatigue class — verifies bounds + FE wiring.
+
+    pop=10, gen=2 keeps wall-clock under ~10s. We assert candidates exist
+    and the result payload exposes the fatigue steel_class so the UI can
+    pick the right labels.
+    """
+    version = next(populated_fatigue_dir.iterdir()).name
+    resp = client.post(
+        "/api/design/run",
+        json={
+            "model_version": version,
+            "target": {"min": 450, "max": 700},
+            "population_size": 10,
+            "n_generations": 2,
+            "include_cost": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["job_id"]
+
+    body = _wait_for_job(client, job_id, timeout=120.0)
+    if body["status"] != "done":
+        pytest.fail(
+            f"fatigue job ended with status={body['status']} "
+            f"error={body.get('error')!r}"
+        )
+
+    result = body["result"]
+    assert "candidates" in result
+    assert isinstance(result["candidates"], list)
+    assert len(result["candidates"]) > 0, "Pareto front is empty for fatigue"
+    assert result["model"]["steel_class"] == "fatigue_carbon_steel"
+    # Each candidate must carry the canonical numeric fields the chart
+    # depends on, even when the derived dict is empty (HSLA-only keys).
+    for c in result["candidates"]:
+        assert "predicted_mean" in c and isinstance(c["predicted_mean"], (int, float))
+        assert "is_ood" in c
+        assert "validation" in c
+        # Composition uses _pct keys regardless of class.
+        assert "c_pct" in c["composition"]
+        # Processing carries the fatigue-specific knobs.
+        assert "carburizing_temp_c" in c["processing"]
+
+
+def test_design_run_qt_class_gate_v2_message(
+    populated_non_hsla_dir: Path, client: TestClient
+) -> None:
+    """en10083_qt explicitly marked as v2 backlog in the gate message."""
+    version = next(populated_non_hsla_dir.iterdir()).name
+    resp = client.post(
+        "/api/design/run",
+        json={
+            "model_version": version,
+            "target": {"min": 485, "max": 580},
+            "include_cost": False,
+        },
+    )
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    # Either fatigue is mentioned (the new-supported sibling) or v2 backlog.
+    assert "v2" in detail or "fatigue" in detail.lower()
 
 
 def test_design_run_unknown_model_404(

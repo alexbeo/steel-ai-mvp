@@ -32,6 +32,7 @@ const state = {
   pollAbort: null,
   loading: false,
   running: false,
+  lastClassMeta: null,
 };
 
 let elements = null;
@@ -47,6 +48,44 @@ function activeModel() {
 
 function isHsla(model) {
   return model && model.steel_class === 'pipe_hsla';
+}
+
+// Inverse design supports HSLA (narrow-band hand-tuned bounds) and
+// fatigue_carbon_steel (Agrawal NIMS, real data) since 2026-05-10.
+// Q&T en10083_qt is on the v2 backlog — class banner surfaces it.
+const DESIGNABLE_CLASSES = new Set(['pipe_hsla', 'fatigue_carbon_steel']);
+function isDesignable(model) {
+  return !!model && DESIGNABLE_CLASSES.has(model.steel_class);
+}
+
+// Per-class UI metadata: target field label, default range, helper for
+// the request body. For HSLA the historical defaults (485/580 МПа)
+// stay; for fatigue we centre on the dataset median (~500 МПа) with a
+// wide enough envelope to avoid empty Pareto fronts on the first run.
+const CLASS_UI_META = {
+  pipe_hsla: {
+    targetLabel: 'σт',
+    targetUnit: 'МПа',
+    minDefault: 485,
+    maxDefault: 580,
+    minRange: [380, 800],
+    maxRange: [400, 900],
+    showWeldability: true,
+  },
+  fatigue_carbon_steel: {
+    targetLabel: 'Предел усталости',
+    targetUnit: 'МПа',
+    minDefault: 450,
+    maxDefault: 700,
+    minRange: [200, 1100],
+    maxRange: [250, 1200],
+    showWeldability: false,
+  },
+};
+
+function classMeta(model) {
+  if (!model) return CLASS_UI_META.pipe_hsla;
+  return CLASS_UI_META[model.steel_class] || CLASS_UI_META.pipe_hsla;
 }
 
 function fmt(v, d = 1) {
@@ -102,9 +141,11 @@ function buildSkeleton() {
     el(
       'p',
       {},
-      'Нет обученных HSLA-моделей. Сначала обучите модель класса ',
+      'Нет обученных моделей. Сначала обучите модель (',
       el('strong', {}, 'pipe_hsla'),
-      ' во вкладке «Обучение модели».',
+      ' или ',
+      el('strong', {}, 'fatigue_carbon_steel'),
+      ') во вкладке «Обучение модели».',
     ),
   );
 
@@ -430,22 +471,25 @@ function updateClassBanner() {
     return;
   }
   elements.modelMeta.textContent = `Класс: ${m.steel_class} · target: ${m.target}`;
-  if (!isHsla(m)) {
+  if (!isDesignable(m)) {
+    // Currently the only class that lands here is en10083_qt; the labels
+    // map keeps room for future classes without code changes.
     const labels = {
       en10083_qt: 'EN 10083-2 Q&T (carbon)',
-      fatigue_carbon_steel: 'Carbon Fatigue (Agrawal NIMS)',
     };
     const label = labels[m.steel_class] || m.steel_class;
     elements.classBanner.replaceChildren(
       el(
         'div',
         {},
-        'ℹ️ Inverse design пока работает только для ',
+        'ℹ️ Inverse design поддерживает классы ',
         el('strong', {}, 'Pipe HSLA'),
+        ' и ',
+        el('strong', {}, 'Carbon Fatigue (Agrawal NIMS)'),
         '. Активный класс — ',
         el('strong', {}, label),
         ', для него используйте вкладку «Прогноз». ' +
-          'Поддержка inverse design для других классов запланирована на v2.',
+          'Q&T inverse design запланирован на v2 backlog.',
       ),
     );
     elements.classBanner.hidden = false;
@@ -454,6 +498,59 @@ function updateClassBanner() {
     elements.classBanner.hidden = true;
     elements.runBtn.disabled = false;
   }
+  applyClassUi(m);
+}
+
+// Re-skin the form for the active class — target field labels/defaults
+// and weldability constraints visibility. Called after the user picks a
+// model from the dropdown.
+function applyClassUi(model) {
+  if (!elements) return;
+  const meta = classMeta(model);
+
+  // σт ↔ Предел усталости labels.
+  const ytMinLabel = elements.ytMinInput.parentElement?.querySelector(
+    '.design-field-label',
+  );
+  const ytMaxLabel = elements.ytMaxInput.parentElement?.querySelector(
+    '.design-field-label',
+  );
+  if (ytMinLabel) {
+    ytMinLabel.textContent = `${meta.targetLabel} минимум, ${meta.targetUnit}`;
+  }
+  if (ytMaxLabel) {
+    ytMaxLabel.textContent = `${meta.targetLabel} максимум, ${meta.targetUnit}`;
+  }
+
+  // Defaults — only overwrite if the user hasn't changed the value
+  // away from the previous default (avoids clobbering active edits).
+  const prevMeta = state.lastClassMeta;
+  if (
+    !prevMeta ||
+    parseFloat(elements.ytMinInput.value) === prevMeta.minDefault
+  ) {
+    elements.ytMinInput.value = String(meta.minDefault);
+  }
+  if (
+    !prevMeta ||
+    parseFloat(elements.ytMaxInput.value) === prevMeta.maxDefault
+  ) {
+    elements.ytMaxInput.value = String(meta.maxDefault);
+  }
+  elements.ytMinInput.min = String(meta.minRange[0]);
+  elements.ytMinInput.max = String(meta.minRange[1]);
+  elements.ytMaxInput.min = String(meta.maxRange[0]);
+  elements.ytMaxInput.max = String(meta.maxRange[1]);
+
+  // CEV/Pcm — hide the parent <label> for non-HSLA classes. They live
+  // in the same grid; hiding via the .hidden attribute keeps layout
+  // consistent and re-shows them cleanly when the user switches back.
+  const cevLabel = elements.cevMaxInput.parentElement;
+  const pcmLabel = elements.pcmMaxInput.parentElement;
+  if (cevLabel) cevLabel.hidden = !meta.showWeldability;
+  if (pcmLabel) pcmLabel.hidden = !meta.showWeldability;
+
+  state.lastClassMeta = meta;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -463,24 +560,33 @@ function updateClassBanner() {
 function readRequestBody() {
   const m = activeModel();
   if (!m) throw new Error('Модель не выбрана');
+  const meta = classMeta(m);
   const ytMin = parseFloat(elements.ytMinInput.value);
   const ytMax = parseFloat(elements.ytMaxInput.value);
   if (!(ytMin < ytMax)) {
-    throw new Error('σт минимум должен быть меньше максимума');
+    throw new Error(
+      `${meta.targetLabel} минимум должен быть меньше максимума`,
+    );
   }
   const includeCost = !!elements.includeCostInput.checked;
   const body = {
     model_version: m.version,
     target: { min: ytMin, max: ytMax },
-    hard_constraints: {
-      cev_iiw_max: parseFloat(elements.cevMaxInput.value),
-      pcm_max: parseFloat(elements.pcmMaxInput.value),
-    },
     population_size: parseInt(elements.popSizeInput.value, 10),
     n_generations: parseInt(elements.nGenInput.value, 10),
     include_cost: includeCost,
     cost_mode: elements.costModeSelect.value,
   };
+  // Weldability constraints are HSLA-only — the API ignores them for
+  // other classes anyway, but Pydantic's HardConstraints schema pins
+  // CEV to [0.30, 0.60] which would 422 if a fatigue UI ever sent a
+  // bare 0 or NaN. Be explicit.
+  if (meta.showWeldability) {
+    body.hard_constraints = {
+      cev_iiw_max: parseFloat(elements.cevMaxInput.value),
+      pcm_max: parseFloat(elements.pcmMaxInput.value),
+    };
+  }
   if (includeCost && state.priceSnapshot) {
     body.price_snapshot = state.priceSnapshot;
   }
@@ -583,6 +689,15 @@ function renderResult() {
 
   const cands = data.candidates || [];
   const currency = data.cost_currency || 'EUR';
+  // Pull the active class meta so chart/table headers track HSLA vs
+  // fatigue (σт vs Предел усталости). model.steel_class is set by the
+  // worker — fall back to active dropdown selection when missing
+  // (defensive, e.g. legacy result without the field).
+  const responseClassId = data?.model?.steel_class;
+  const responseModel = responseClassId
+    ? { steel_class: responseClassId }
+    : activeModel();
+  const meta = classMeta(responseModel);
 
   // Summary metrics row: four metrics + an expander «Причины отсева»
   // when rejection_summary is non-empty. Plus two baseline cells —
@@ -603,7 +718,10 @@ function renderResult() {
       summaryCell('OOD', String(oodN)),
       summaryCell('С warnings', String(warnN)),
       summaryCell('Отсеяно валидатором', String(data.n_rejected ?? 0)),
-      summaryCell('Baseline σт, МПа', fmt(baseProp, 1)),
+      summaryCell(
+        `Baseline ${meta.targetLabel}, ${meta.targetUnit}`,
+        fmt(baseProp, 1),
+      ),
       summaryCell(`Baseline cost, ${currency}/т`, fmt(baseCost, 0)),
     ),
   ];
@@ -618,9 +736,9 @@ function renderResult() {
   const chartHost = el('div', { class: 'design-pareto-host' });
   elements.chartMount.append(chartHost);
   renderParetoChart(chartHost, cands, {
-    title: 'Pareto-фронт σт × cost',
+    title: `Pareto-фронт ${meta.targetLabel} × cost`,
     xLabel: `Стоимость, ${currency}/т`,
-    yLabel: 'σт, МПа',
+    yLabel: `${meta.targetLabel}, ${meta.targetUnit}`,
     currency,
     selectedIdx: state.selectedCandidateIdx,
     onSelect: (idx, _cand) => selectCandidate(idx),
@@ -630,11 +748,16 @@ function renderResult() {
     );
   });
 
-  // Candidate table — Top-K (10) with click-to-select.
-  renderCandidateTable(cands.slice(0, 10), currency);
+  // Candidate table — Top-K (10) with click-to-select. Uses the same
+  // meta to localise the property header.
+  renderCandidateTable(cands.slice(0, 10), currency, meta);
 
   // Breakdown panel for selected candidate.
-  renderBreakdown(cands.find((c) => c.idx === state.selectedCandidateIdx) || cands[0], currency);
+  renderBreakdown(
+    cands.find((c) => c.idx === state.selectedCandidateIdx) || cands[0],
+    currency,
+    meta,
+  );
 
   elements.downloadBtn.hidden = cands.length === 0;
 }
@@ -680,9 +803,12 @@ function renderRejectionSummary(summary) {
   return details;
 }
 
-function renderCandidateTable(cands, currency) {
+function renderCandidateTable(cands, currency, meta) {
   if (!elements) return;
-  const headers = ['#', 'σт, МПа', '90% CI', `Cost, ${currency}/т`, 'Δ vs baseline', 'OOD', 'Status'];
+  const propHeader = meta
+    ? `${meta.targetLabel}, ${meta.targetUnit}`
+    : 'σт, МПа';
+  const headers = ['#', propHeader, '90% CI', `Cost, ${currency}/т`, 'Δ vs baseline', 'OOD', 'Status'];
   const thead = el(
     'thead',
     {},
@@ -747,15 +873,20 @@ function selectCandidate(idx) {
   state.selectedCandidateIdx = idx;
   const cands = state.paretoSnapshot || [];
   const cand = cands.find((c) => c.idx === idx);
+  const responseClassId = state.lastResult?.model?.steel_class;
+  const responseModel = responseClassId
+    ? { steel_class: responseClassId }
+    : activeModel();
+  const meta = classMeta(responseModel);
   // Re-render chart so highlight outline updates.
   if (cand) {
     const chartHost = elements.chartMount.querySelector('.design-pareto-host');
     if (chartHost) {
       const currency = state.lastResult?.cost_currency || 'EUR';
       renderParetoChart(chartHost, cands, {
-        title: 'Pareto-фронт σт × cost',
+        title: `Pareto-фронт ${meta.targetLabel} × cost`,
         xLabel: `Стоимость, ${currency}/т`,
-        yLabel: 'σт, МПа',
+        yLabel: `${meta.targetLabel}, ${meta.targetUnit}`,
         currency,
         selectedIdx: idx,
         onSelect: (i) => selectCandidate(i),
@@ -766,15 +897,17 @@ function selectCandidate(idx) {
   for (const row of elements.tableMount.querySelectorAll('tr.design-cand-row')) {
     row.classList.toggle('selected', row.dataset.idx === String(idx));
   }
-  renderBreakdown(cand, state.lastResult?.cost_currency || 'EUR');
+  renderBreakdown(cand, state.lastResult?.cost_currency || 'EUR', meta);
 }
 
-function renderBreakdown(cand, currency) {
+function renderBreakdown(cand, currency, meta) {
   if (!elements) return;
   if (!cand) {
     elements.breakdownMount.replaceChildren();
     return;
   }
+  const propLabel = meta?.targetLabel || 'σт';
+  const propUnit = meta?.targetUnit || 'МПа';
   const breakdown = cand.breakdown || [];
   const composition = cand.composition || {};
   const processing = cand.processing || {};
@@ -856,7 +989,7 @@ function renderBreakdown(cand, currency) {
       el(
         'span',
         { class: 'design-breakdown-meta mono' },
-        `σт=${fmt(cand.predicted_mean, 1)} МПа · cost=${fmt(cand.cost_eur_per_t, 0)} ${currency}/т`,
+        `${propLabel}=${fmt(cand.predicted_mean, 1)} ${propUnit} · cost=${fmt(cand.cost_eur_per_t, 0)} ${currency}/т`,
       ),
     ),
     el(
@@ -1026,6 +1159,7 @@ export function init(container) {
   state.pollAbort = null;
   state.loading = false;
   state.running = false;
+  state.lastClassMeta = null;
 
   const skeleton = buildSkeleton();
   elements = skeleton;
