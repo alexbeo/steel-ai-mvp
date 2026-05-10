@@ -54,7 +54,8 @@ from typing import Any, Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.api.jobs import get_job_store, run_as_job
+from app.api.jobs import run_as_job
+from app.api.llm_gating import make_progress_cancel_check
 from app.api.responses import SafeJSONResponse
 from app.backend.steel_classes import (
     AVAILABLE_CLASS_IDS,
@@ -132,36 +133,22 @@ class TrainRunRequest(BaseModel):
 # ──────────────────────────────────────────────────────────────────────
 
 
-# TODO(jobs.py): consolidate _check_cancelled with deox.py:_check_cancelled и train.py:_check_cancelled
-# (когда _make_progress_cb в jobs.py получит третий freevar — обе копии silently сломаются).
-# Move в app/api/jobs.py как public helper get_job_cancellation_flag(progress) -> bool.
+# PR 10 deduplication: previously a per-router copy of the closure-walk
+# cancellation peek. Now delegates to the shared helper in
+# ``app.api.llm_gating`` (extracted alongside the LLM 503-gating helper
+# during PR 10 hypotheses migration). The wrapper preserves the call
+# site shape (``_check_cancelled(progress) -> bool``) so the per-trial
+# Optuna hook and the coarse stage gates stay untouched.
 def _check_cancelled(progress: Any) -> bool:
-    """Peek at the job's cancellation flag through the progress closure.
+    """Back-compat wrapper around :func:`make_progress_cancel_check`.
 
-    The progress callback is a closure over ``job_id``; we walk back to
-    the JobStore to read ``cancellation_requested``. This indirection is
-    the price of keeping the JobStore singleton out of fn signatures.
-
-    Returns True if cancellation was requested. Returns False if the
-    closure can't be introspected (silent fallback so a refactor in
-    ``jobs.py:_make_progress_cb`` doesn't break cancellation — at worst
-    cancellation becomes a no-op until someone notices the missing flag).
+    The shared helper returns a *callable*; for the per-call style this
+    file uses (each Optuna trial reads the flag once), we resolve once
+    and invoke immediately. Keeping the wrapper means the worker body
+    and the partial captured in ``cancellation_callback=`` continue to
+    work unchanged.
     """
-    if progress is None:
-        return False
-    # Look up ``job_id`` by name through ``__code__.co_freevars`` rather
-    # than positional ``__closure__[0]`` — this stays correct even if
-    # ``_make_progress_cb`` later captures additional free variables.
-    try:
-        code = getattr(progress, "__code__", None)
-        if code is None or "job_id" not in code.co_freevars:
-            return False
-        idx = code.co_freevars.index("job_id")
-        job_id = progress.__closure__[idx].cell_contents  # type: ignore[index]
-    except (AttributeError, IndexError, TypeError):
-        return False
-    job = get_job_store().get(str(job_id))
-    return bool(job and job.cancellation_requested)
+    return make_progress_cancel_check(progress)()
 
 
 def _run_train_job(

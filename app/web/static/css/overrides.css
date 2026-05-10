@@ -2043,3 +2043,413 @@
   border-top: 1px solid var(--border);
 }
 
+/* ───────── PR 10 — Tab «Гипотезы» (LLM single-call ~3 min + critic) ─────────
+   Visual contract mirrors the deox AI sub-tab (.deox-ai-*) — generator
+   output → divider → critic verdict block; verdict-counts metric strip
+   reuses the train-metrics-grid card pattern. We don't reuse the exact
+   .deox-ai-* / .train-metric-* class names so a future visual tweak to
+   one tab doesn't ripple unintentionally; the feel stays consistent
+   through the same shared CSS variables (--surface, --accent, --border). */
+
+.hypotheses-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.hypotheses-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.hypotheses-error {
+  background: rgba(232, 116, 116, 0.12);
+  border: 1px solid rgba(232, 116, 116, 0.45);
+  border-radius: 4px;
+  color: rgba(240, 170, 170, 1);
+  font-size: 12.5px;
+  padding: 10px 12px;
+}
+
+/* Form panel — model dropdown, n_hypotheses input, save toggle, run button */
+
+.hypotheses-form-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.hypotheses-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: end;
+}
+
+@media (max-width: 720px) {
+  .hypotheses-form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.hypotheses-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hypotheses-field-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hypotheses-select,
+.hypotheses-input {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+
+.hypotheses-input {
+  font-family: var(--font-mono);
+}
+
+.hypotheses-model-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.hypotheses-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.hypotheses-save-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.hypotheses-save-toggle input[type="checkbox"] {
+  margin: 0;
+}
+
+.hypotheses-run-btn {
+  /* primary class already styles; keep selector for spec compliance */
+}
+
+.hypotheses-subnote {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.hypotheses-progress-mount:empty {
+  display: none;
+}
+
+.hypotheses-result-mount:empty {
+  display: none;
+}
+
+/* Result panel — headline + metric strip + N hypothesis cards */
+
+.hypotheses-result {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hypotheses-result-headline {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.hypotheses-decision-saved {
+  font-size: 12px;
+  color: var(--success, #3a9d23);
+  font-family: var(--font-mono);
+}
+
+.hypotheses-empty {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 14px 16px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* Verdict-counts metric strip — same layout as .train-metrics-grid */
+
+.hypotheses-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 720px) {
+  .hypotheses-metrics-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.hypotheses-metric-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hypotheses-metric-label {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.hypotheses-metric-value {
+  font-size: 16px;
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
+
+.hypotheses-metric-accept {
+  border-color: rgba(108, 209, 132, 0.45);
+}
+.hypotheses-metric-accept .hypotheses-metric-value {
+  color: rgba(174, 234, 188, 1);
+}
+
+.hypotheses-metric-revise {
+  border-color: rgba(247, 168, 92, 0.45);
+}
+.hypotheses-metric-revise .hypotheses-metric-value {
+  color: rgba(247, 200, 150, 1);
+}
+
+.hypotheses-metric-reject {
+  border-color: rgba(232, 116, 116, 0.45);
+}
+.hypotheses-metric-reject .hypotheses-metric-value {
+  color: rgba(240, 170, 170, 1);
+}
+
+/* Hypothesis card */
+
+.hypotheses-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hypotheses-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hypotheses-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  flex: 1 1 auto;
+  line-height: 1.4;
+}
+
+.hypotheses-card-num {
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.hypotheses-card-badges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.hypotheses-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 10.5px;
+  color: #fff;
+  background: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hypotheses-novelty-high {
+  background: var(--danger, #c0392b);
+}
+.hypotheses-novelty-medium {
+  background: var(--warn, #e0a800);
+}
+.hypotheses-novelty-low {
+  background: var(--info, #558ccc);
+}
+
+.hypotheses-cost {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.hypotheses-block {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.hypotheses-list {
+  margin: 4px 0 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+.hypotheses-experiment {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hypotheses-twocol {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 720px) {
+  .hypotheses-twocol {
+    grid-template-columns: 1fr;
+  }
+}
+
+.hypotheses-twocol-label {
+  font-size: 10.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 2px;
+}
+
+.hypotheses-json {
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg);
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.hypotheses-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.hypotheses-card-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Critic verdict block inside a hypothesis card */
+
+.hypotheses-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hypotheses-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hypotheses-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 12px;
+  color: #fff;
+  background: var(--muted);
+}
+
+.hypotheses-verdict-accept {
+  background: var(--success, #3a9d23);
+}
+.hypotheses-verdict-revise {
+  background: var(--warn, #e0a800);
+}
+.hypotheses-verdict-reject {
+  background: var(--danger, #c0392b);
+}
+
+.hypotheses-verdict-confidence {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.hypotheses-summary {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.hypotheses-suggested-revision {
+  background: var(--info-soft, var(--surface-2));
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+

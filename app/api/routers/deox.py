@@ -56,7 +56,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.api.jobs import get_job_store, run_as_job
+from app.api.jobs import run_as_job
+from app.api.llm_gating import (
+    check_llm_ready,
+    make_progress_cancel_check,
+)
 from app.api.responses import SafeJSONResponse
 from app.backend.deoxidation import (
     DEFAULT_MODEL_ID,
@@ -450,36 +454,22 @@ def compare(req: AlDemandRequest) -> dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-# TODO(jobs.py): consolidate _check_cancelled with train.py:_check_cancelled и deox.py:_check_cancelled
-# (когда _make_progress_cb в jobs.py получит третий freevar — обе копии silently сломаются).
-# Move в app/api/jobs.py как public helper get_job_cancellation_flag(progress) -> bool.
+# PR 10 deduplication: previously a per-router copy of the closure-walk
+# cancellation peek. Now delegates to the shared helper in
+# ``app.api.llm_gating`` — the train.py copy moved with it, so the three
+# duplicates collapse to a single source of truth. The wrapper kept here
+# preserves the call site shape (``_check_cancelled(progress) -> bool``)
+# so the worker body and any external callers stay untouched.
 def _check_cancelled(progress: Any) -> bool:
-    """Peek at the job's cancellation flag through the progress closure.
+    """Back-compat wrapper around :func:`make_progress_cancel_check`.
 
-    Same trick as ``app/api/routers/train.py:_check_cancelled`` — the
-    progress callback is a closure over ``job_id``, so we walk back to
-    the JobStore to read ``cancellation_requested`` without threading
-    the store through fn signatures. Duplicating the helper here (vs
-    importing from train) keeps the deox router self-contained and
-    avoids cross-router coupling for a 20-line utility.
-
-    Returns True iff cancellation was requested. Returns False when
-    progress is None (no JobStore wired) or the closure can't be
-    introspected (silent fallback: at worst cancellation becomes a
-    no-op until someone notices the missing flag).
+    The shared helper returns a *callable*; for the per-call style this
+    file uses, we resolve once and invoke immediately. Keeping the wrapper
+    means the worker code below (which calls ``_check_cancelled(progress)``
+    twice — once before each LLM call) doesn't have to thread a fresh
+    closure through the call sites.
     """
-    if progress is None:
-        return False
-    try:
-        code = getattr(progress, "__code__", None)
-        if code is None or "job_id" not in code.co_freevars:
-            return False
-        idx = code.co_freevars.index("job_id")
-        job_id = progress.__closure__[idx].cell_contents  # type: ignore[index]
-    except (AttributeError, IndexError, TypeError):
-        return False
-    job = get_job_store().get(str(job_id))
-    return bool(job and job.cancellation_requested)
+    return make_progress_cancel_check(progress)()
 
 
 def _build_heat_context(req: AlAdvisoryRequest) -> dict[str, Any]:
@@ -690,45 +680,17 @@ def _run_ai_cycle_job(
 
 
 def _llm_ready_or_503() -> None:
-    """Validate ANTHROPIC_API_KEY + advisor/critic prompts before submit.
+    """Back-compat shim — the implementation moved to ``app.api.llm_gating``.
 
-    Failing fast at the endpoint rather than inside the worker means
-    the UI sees a 503 banner ("AI не настроен") instead of a generic
-    "job ended with error" — clearer remediation. The two checks:
-
-    1. ``ANTHROPIC_API_KEY`` env var present (the SDK + factories
-       defer-fail without it; we check up-front for clarity).
-    2. Both prompt files (``deoxidation_advisor.md``,
-       ``deoxidation_critic.md``) exist on disk. Public clones may
-       be missing them — gitignored intellectual property.
+    PR 10 extracted the body into :func:`app.api.llm_gating.check_llm_ready`
+    so PR 10/11 routers can share the exact same fail-fast contract
+    (single Russian-language 503 detail, single prompt-files iteration
+    style). This wrapper keeps the deox-specific prompt list local —
+    callers stay readable and tests that monkeypatch
+    ``app.backend.prompt_loader.load_prompt`` continue to work because
+    the shared helper imports the symbol at call time.
     """
-    import os
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "LLM не настроен — ANTHROPIC_API_KEY отсутствует в окружении. "
-                "Добавьте ключ в .env и перезапустите uvicorn."
-            ),
-        )
-
-    # Prompt presence check — load_prompt is cached, so this is cheap
-    # on the warm path and clear on the cold one.
-    from app.backend.prompt_loader import PromptNotFoundError, load_prompt
-
-    for name in ("deoxidation_advisor", "deoxidation_critic"):
-        try:
-            load_prompt(name)
-        except PromptNotFoundError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"Prompt {name}.md не найден. Промпты — gitignored "
-                    f"intellectual property; обратитесь к владельцу проекта. "
-                    f"({exc})"
-                ),
-            ) from exc
+    check_llm_ready(["deoxidation_advisor", "deoxidation_critic"])
 
 
 @router.post(
