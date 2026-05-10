@@ -10,8 +10,7 @@ Endpoints:
 - ``GET /api/system/models`` — list of trained models (one entry per
   ``models/<version>/meta.json``).
 - ``GET /api/system/models/active`` — last (sorted by name) trained
-  model. Mirrors Streamlit sidebar default selection
-  (``index=len(available_models)-1``).
+  model. Default selection convention: ``available_models[-1]``.
 - ``GET /api/system/kpi`` — 5-cell KPI strip aggregate for the topbar
   (PR 13 of the migration). Pulls from active model meta.json + the
   Decision Log. Always 200 with null fields when data missing — the
@@ -52,9 +51,9 @@ router = APIRouter()
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODELS_DIR = PROJECT_ROOT / "models"
 
-# Streamlit fallback: legacy meta.json without ``steel_class`` defaults
-# to the original HSLA pipeline class (CLAUDE.md «Working as a team» +
-# design doc User decisions #5).
+# Legacy fallback: meta.json without ``steel_class`` defaults to the
+# original HSLA pipeline class (CLAUDE.md «Working as a team» + design
+# doc User decisions #5).
 LEGACY_STEEL_CLASS_FALLBACK = "pipe_hsla"
 
 # CWE-22 mitigation: ``model_version`` arrives from untrusted clients and is
@@ -199,9 +198,9 @@ def _model_summary(meta: dict[str, Any]) -> dict[str, Any]:
 def _list_model_metas() -> list[dict[str, Any]]:
     """Walk ``MODELS_DIR`` and return parsed metas sorted by name asc.
 
-    Sort by directory name matches Streamlit's ``sorted([...])`` —
-    timestamps in version names mean asc-sort == oldest-first, so the
-    "active" model (last) is the most recently trained one.
+    Sort by directory name: timestamps in version names mean asc-sort ==
+    oldest-first, so the "active" model (last) is the most recently
+    trained one.
     """
     if not MODELS_DIR.is_dir():
         return []
@@ -257,10 +256,9 @@ def list_models() -> dict[str, Any]:
 def get_active_model() -> dict[str, Any]:
     """Return the most recently trained model.
 
-    Mirrors Streamlit sidebar default: ``available_models[-1]`` after
-    ``sorted`` by directory name. 404 when ``models/`` has zero valid
-    entries — frontend renders a "train a model first" banner in that
-    case (parity with Streamlit ``if not selected_model``).
+    Default selection is ``available_models[-1]`` after ``sorted`` by
+    directory name. 404 when ``models/`` has zero valid entries —
+    frontend renders a "train a model first" banner in that case.
     """
     metas = _list_model_metas()
     if not metas:

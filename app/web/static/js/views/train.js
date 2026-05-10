@@ -1,7 +1,6 @@
 // Tab 02 — Обучение модели. PR 8 wires training job + feature-importance chart.
 //
-// Streamlit parity reference: app/frontend/app.py lines 509-680
-// (`with tab_train:`). The flow:
+// Flow:
 //   GET  /api/system/steel-classes              → {items, count}
 //   POST /api/train/run {class_id, n_samples, n_trials, seed}
 //                                               → {job_id, config}
@@ -115,8 +114,8 @@ function buildSkeleton() {
 
   // n_samples — always shown. For fatigue_carbon_steel the backend
   // silently ignores it (the generator loads the fixed 437-record
-  // Agrawal NIMS parquet); this matches the Streamlit UX where the
-  // slider was always visible regardless of class.
+  // Agrawal NIMS parquet); the slider stays visible regardless of class
+  // for UX consistency.
   const nSamplesInput = el('input', {
     type: 'number',
     class: 'train-input mono',
@@ -440,8 +439,7 @@ function renderResult() {
   );
 
   // Critic warnings — pattern_warnings + llm_observations as separate
-  // sections to mirror Streamlit (lines 631-670). Empty section when
-  // both are missing.
+  // sections. Empty section when both are missing.
   renderCritic(data.critic || {});
 
   // Feature importance chart.

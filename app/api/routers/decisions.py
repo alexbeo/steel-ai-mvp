@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# Streamlit «История» offers limit slider 5..100 (default 20). We keep the same
+# «История» limit slider goes 5..100 (default 20). We keep the same
 # upper bound so frontend pagination cannot DoS the SQLite read.
 _MAX_LIMIT = 100
 _DEFAULT_LIMIT = 20

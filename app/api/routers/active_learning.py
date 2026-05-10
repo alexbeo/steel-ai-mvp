@@ -4,11 +4,10 @@ PR 5 of the Streamlit→FastAPI migration. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Следующие эксперименты»).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 2221-2502
-(``with tab_al:`` block). Streamlit only supports ``fatigue_carbon_steel``
-on this tab — same constraint applies here, the active_learner runner
-expects the Agrawal dataset and the Q&T/HSLA classes don't have a
-matching real dataset wired in yet (see ``scripts/propose_next_experiments.py``).
+Only ``fatigue_carbon_steel`` is supported on this endpoint — the
+active_learner runner expects the Agrawal dataset and the Q&T/HSLA
+classes don't have a matching real dataset wired in yet (see
+``scripts/propose_next_experiments.py``).
 
 Endpoints:
 - ``POST /api/active-learning/propose`` — synchronous LHS scan + EI ranking.
@@ -25,8 +24,8 @@ Risks #3 (SafeJSONResponse): every endpoint declares
 ``ExperimentProposal`` dataclass + numpy floats serialise via the custom
 encoder instead of Pydantic v2's default revalidation.
 
-Decision Log: parity with Streamlit (lines 2393-2415) — successful runs
-are persisted with tag ``active_learning`` so the History tab shows them.
+Decision Log: successful runs are persisted with tag ``active_learning``
+so the History tab shows them.
 """
 from __future__ import annotations
 
@@ -54,9 +53,8 @@ router = APIRouter()
 
 
 # Decision-vars catalogue mirrors ``scripts/propose_next_experiments.py``
-# (DESIGN_COMPOSITION + DESIGN_PROCESS) — Streamlit uses the same list at
-# lines 2323-2333. Kept module-level so tests can monkeypatch if they want
-# to vary the design space.
+# (DESIGN_COMPOSITION + DESIGN_PROCESS). Kept module-level so tests can
+# monkeypatch if they want to vary the design space.
 DESIGN_COMPOSITION = ["si_pct", "mn_pct", "ni_pct", "cr_pct", "cu_pct", "mo_pct"]
 DESIGN_PROCESS = [
     "normalizing_temp_c",
@@ -67,10 +65,10 @@ DESIGN_PROCESS = [
     "through_hardening_cooling_rate_c_per_s",
 ]
 
-# Streamlit hard-codes this constraint (lines 2268-2272). The active_learner
-# pipeline assumes the Agrawal NIMS dataset is available and decision_vars
-# match Agrawal's feature space; other classes (HSLA, Q&T) need their own
-# baseline-row + dataset wiring before the same endpoint can serve them.
+# Hard-coded class constraint: the active_learner pipeline assumes the
+# Agrawal NIMS dataset is available and decision_vars match Agrawal's
+# feature space; other classes (HSLA, Q&T) need their own baseline-row +
+# dataset wiring before the same endpoint can serve them.
 SUPPORTED_STEEL_CLASS = "fatigue_carbon_steel"
 
 
@@ -82,15 +80,13 @@ SUPPORTED_STEEL_CLASS = "fatigue_carbon_steel"
 class ProposeRequest(BaseModel):
     """Request body for ``POST /api/active-learning/propose``.
 
-    Field bounds mirror the Streamlit slider ranges (``app/frontend/app.py``
-    lines 2291-2302). ``n_samples`` is the LHS coverage of the feasible
-    space — increase for higher precision, decrease for quick-look. The
-    upper bound (10000) protects against accidental DoS via huge sample
-    counts; Streamlit caps at 5000 already.
+    ``n_samples`` is the LHS coverage of the feasible space — increase
+    for higher precision, decrease for quick-look. The upper bound
+    (10000) protects against accidental DoS via huge sample counts.
 
-    ``top_k`` is the number of ranked candidates returned. Streamlit
-    caps at 10. We allow up to 50 to leave headroom for batch experiment
-    planning use-cases without sacrificing the cheap-run promise.
+    ``top_k`` is the number of ranked candidates returned. We allow up
+    to 50 to leave headroom for batch experiment planning use-cases
+    without sacrificing the cheap-run promise.
 
     ``seed`` is forwarded as-is to LHS so reproducibility is exact;
     ``np.random.default_rng(seed)`` accepts any non-negative int.
@@ -101,7 +97,7 @@ class ProposeRequest(BaseModel):
     )
     n_samples: int = Field(
         default=2000, ge=100, le=10000,
-        description="LHS scan size; Streamlit slider 500-5000.",
+        description="LHS scan size.",
     )
     top_k: int = Field(
         default=5, ge=1, le=50,
@@ -125,14 +121,14 @@ class ProposeRequest(BaseModel):
 
 
 def _baseline_row(df_raw: pd.DataFrame) -> pd.Series:
-    """Streamlit logic (lines 2342-2348): prefer carbon_low_alloy subset.
+    """Prefer the carbon_low_alloy subset for the baseline.
 
     If the sub_class column exists and the carbon_low_alloy partition
     has at least 50 rows, take the median there. Otherwise fall back to
     the median over the full dataset. The 50-row threshold matches the
     runner script (``scripts/propose_next_experiments.py:74``); we keep
     it identical to avoid divergent "baseline" semantics between CLI and
-    UI.
+    API.
     """
     if "sub_class" in df_raw.columns:
         sub = df_raw[df_raw["sub_class"] == "carbon_low_alloy"]
@@ -146,10 +142,10 @@ def _baseline_row(df_raw: pd.DataFrame) -> pd.Series:
 def _decision_vars(feature_list: list[str], training_ranges: dict[str, Any]) -> list[str]:
     """Subset of design vars present in both feature_list and training_ranges.
 
-    Mirrors ``scripts/propose_next_experiments.py:94-97`` and
-    ``app/frontend/app.py:2367-2370``. We restrict to vars that have a
-    training_ranges entry so the LHS bounds are well-defined; vars
-    missing from training_ranges would break ``bounds[v]`` lookup later.
+    Mirrors ``scripts/propose_next_experiments.py:94-97``. We restrict
+    to vars that have a training_ranges entry so the LHS bounds are
+    well-defined; vars missing from training_ranges would break
+    ``bounds[v]`` lookup later.
     """
     return [
         v for v in DESIGN_COMPOSITION + DESIGN_PROCESS
@@ -161,10 +157,10 @@ def _proposal_to_dict(p: Any) -> dict[str, Any]:
     """Project an ExperimentProposal dataclass to a stable response shape.
 
     We keep the existing dataclass field names (acquisition_score,
-    expected_improvement, …) since Streamlit and decision_log both
-    consume that shape and changing names here would silently break
-    history-replay rendering. ``rank`` is added at the router level —
-    it's a presentation concern, not part of the dataclass contract.
+    expected_improvement, …) since the decision_log consumes that shape
+    and changing names here would silently break history-replay
+    rendering. ``rank`` is added at the router level — it's a
+    presentation concern, not part of the dataclass contract.
     """
     base = asdict(p)
     return {
@@ -177,9 +173,8 @@ def _proposal_to_dict(p: Any) -> dict[str, Any]:
         "uncertainty_width": base["uncertainty_width"],
         "is_ood": base["ood_flag"],
         # Keep the dataclass key too so existing code that reads
-        # ``proposal.ood_flag`` from the JSON history (Streamlit
-        # decision_log replay) still works. Both flags reflect the
-        # same boolean.
+        # ``proposal.ood_flag`` from the JSON history (decision_log
+        # replay) still works. Both flags reflect the same boolean.
         "ood_flag": base["ood_flag"],
         "estimated_cost_eur_per_t": base["cost_per_ton"],
         "expected_improvement": base["expected_improvement"],
@@ -206,13 +201,12 @@ def propose(req: ProposeRequest) -> dict[str, Any]:
     Validation order mirrors PR 3 ``predict``:
         1) ``_safe_version_dir`` — path traversal guard (CWE-22). 400.
         2) Directory exists + meta.json readable. 404.
-        3) Steel class is fatigue_carbon_steel (Streamlit constraint). 400.
+        3) Steel class is fatigue_carbon_steel. 400.
         4) Dataset / model load + LHS + scoring. 200.
 
     Returns a structured response with ranked candidates, the baseline
     used to compute deltas, model echo (normalised version + steel class),
-    and ``computation_time_s`` so the UI can surface "took N seconds" UX
-    parity with Streamlit's spinner.
+    and ``computation_time_s`` so the UI can surface "took N seconds" UX.
     """
     # -------- 1. Locate model + meta -----------------------------------
     version_dir = system_router._safe_version_dir(req.model_version)
@@ -230,9 +224,8 @@ def propose(req: ProposeRequest) -> dict[str, Any]:
         )
 
     # -------- 2. Class gate --------------------------------------------
-    # Streamlit warns and refuses to run on non-fatigue classes (line 2268).
-    # We surface the same restriction as a 400 — the API is supposed to be
-    # explicit about what it doesn't support.
+    # Refuse to run on non-fatigue classes — surface as 400 since the API
+    # is supposed to be explicit about what it doesn't support.
     steel_class = meta.get("steel_class") or system_router.LEGACY_STEEL_CLASS_FALLBACK
     if steel_class != SUPPORTED_STEEL_CLASS:
         raise HTTPException(
@@ -323,10 +316,9 @@ def propose(req: ProposeRequest) -> dict[str, Any]:
         row["rank"] = rank
         candidate_rows.append(row)
 
-    # -------- 5. Decision Log (parity with Streamlit) ------------------
+    # -------- 5. Decision Log ------------------------------------------
     # Best-effort: a logging failure must not turn a successful active-
-    # learning run into a 500 to the user. Streamlit's behaviour (lines
-    # 2393-2415) is also fire-and-forget under the spinner.
+    # learning run into a 500 to the user. Fire-and-forget by design.
     try:
         top1_score = (
             f"{proposals[0].acquisition_score:.4f}" if proposals else "none"

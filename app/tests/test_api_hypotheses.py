@@ -1,8 +1,5 @@
 """Tests for /api/hypotheses/run — generator + critic LLM cycle (PR 10).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 1474-1764
-(``with tab_hyp:`` block).
-
 Mocking strategy mirrors ``test_api_deox_ai.py`` (PR 9):
     - The router lazy-imports ``make_hypothesis_generator`` /
       ``make_hypothesis_critic`` inside ``_run_hypothesis_job`` so we

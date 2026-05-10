@@ -1,6 +1,5 @@
 // Tab 03 — Прогноз. Class-aware composition form + /api/predict + anomaly explainer.
 //
-// Streamlit parity reference: app/frontend/app.py lines 685-901.
 // Data flow:
 //   GET  /api/system/models                  → {items, count}
 //   GET  /api/system/models/active           → model meta (404 if none)
@@ -75,7 +74,7 @@ function defaultComposition(profile) {
 }
 
 function decimalsFor(feat) {
-  // Streamlit format selector: %.4f for *_pct, %.2f otherwise (line 749).
+  // Format selector: %.4f for *_pct (compositions), %.2f otherwise.
   return feat.endsWith('_pct') ? 4 : 2;
 }
 
@@ -549,10 +548,10 @@ async function runAnomalyExplain() {
 
 /** Build the explanation panel from a completed job result.
  *
- * Mirrors Streamlit lines 869-901 — severity badge, summary, anomalous
- * features list, mechanism concerns, production risks, suggested
- * correction. Falls back to an "Объяснение не получено" notice when
- * ``result.explanation`` is null (LLM call failed silently).
+ * Renders severity badge, summary, anomalous features list, mechanism
+ * concerns, production risks, and suggested correction. Falls back to
+ * an "Объяснение не получено" notice when ``result.explanation`` is null
+ * (LLM call failed silently).
  */
 function buildExplanationCard(result) {
   if (!result || !result.explanation) {
@@ -685,8 +684,8 @@ function renderResult() {
 
   // PR 12: show the OOD/wide-CI banner + anomaly-explain button when
   // the prediction is OOD OR the CI is wide vs the target's normal
-  // range (Streamlit parity, app.py:793-803). We render the banner as
-  // long as either trigger fires; the title/body wording adapts.
+  // range. We render the banner as long as either trigger fires; the
+  // title/body wording adapts.
   const isOod = Boolean(data.ood && data.ood.is_ood);
   const isWideCi = Boolean(data.prediction && data.prediction.wide_ci);
   if (isOod || isWideCi) {

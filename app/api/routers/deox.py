@@ -1,13 +1,9 @@
 """Router for /api/deox/* — Al deoxidation calculator (physics + AI).
 
 PR 4 of the Streamlit→FastAPI migration introduced three sync endpoints
-(forward / inverse / compare). PR 9 adds a fourth, asynchronous
-endpoint — the AI advisor cycle, which mirrors Streamlit's ``sub_ai``
-tab (``app/frontend/app.py`` lines 1221-1463). See
+(forward / inverse / compare). PR 9 added a fourth, asynchronous
+endpoint — the AI advisor cycle (``sub_ai`` sub-tab). See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``.
-
-Streamlit parity reference: ``app/frontend/app.py`` lines 920-1463
-(``with tab_deox:`` block, sub_fwd / sub_inv / sub_cmp / sub_ai).
 
 Endpoints:
 - ``GET  /api/deox/models``   — registry of thermo models for the UI dropdown
@@ -21,8 +17,7 @@ Pattern Library hookup: every sync response carries ``pattern_warnings``
 — the subset of DX01/DX02/DX03 (Phase.DEOXIDATION) that triggered for
 the relevant context. The AI cycle attaches the same forward-context
 warnings to the result so the UI can render risks alongside the LLM
-verdict. Streamlit shows them inline above the result; the JS view
-renders them with severity-coloured banners.
+verdict — the JS view renders them with severity-coloured banners.
 
 Risks #3 (SafeJSONResponse): every endpoint declares
 ``response_class=SafeJSONResponse, response_model=None`` so dataclass +
@@ -82,17 +77,16 @@ router = APIRouter()
 # Pydantic v2 BaseModel is a thin validation layer — fields mirror the
 # kwargs of the corresponding ``deoxidation.compute_*`` functions so the
 # router body is just ``func(**req.model_dump())``. Bounds match the
-# Streamlit number-input ranges (``app/frontend/app.py`` lines 1050-1185).
+# Field bounds align with ``deox.js`` ``buildField`` ranges in the UI.
 # ──────────────────────────────────────────────────────────────────────
 
 
 class AlDemandRequest(BaseModel):
     """Forward calculation input — how much Al to add.
 
-    Field bounds mirror the UI inputs (Streamlit ``st.number_input`` in
-    ``app/frontend/app.py:1050-1185`` and ``deox.js`` ``buildField``
-    ranges) so the API rejects values that the UI would not allow. This
-    is a defensive consistency requirement raised in PR 4 review:
+    Field bounds mirror the ``deox.js`` ``buildField`` ranges so the
+    API rejects values that the UI would not allow. This is a
+    defensive consistency requirement raised in PR 4 review:
     Pydantic must not silently accept inputs the UI blocks (e.g.
     ``al_purity_pct=30`` would imply 30 % active Al — physically a
     booze-grade alloy, not metallurgical-grade).
@@ -118,9 +112,8 @@ class AlDemandRequest(BaseModel):
 class AlQualityRequest(BaseModel):
     """Inverse calculation input — observed deox depth → effective purity.
 
-    Field bounds align with the UI ranges in ``app/frontend/app.py``
-    (lines 1131-1138) and ``deox.js`` (``renderInverseForm``). Same
-    defensive principle as :class:`AlDemandRequest`.
+    Field bounds align with ``deox.js`` ``renderInverseForm`` ranges.
+    Same defensive principle as :class:`AlDemandRequest`.
     """
 
     o_a_before_ppm: float = Field(..., ge=0.0, le=2000.0)
@@ -139,8 +132,7 @@ class AlAdvisoryComposition(BaseModel):
 
     All fields default to None so the UI can submit a partial picture
     (e.g. only C / Mn). The advisor + critic prompts handle missing
-    fields gracefully — they're tagged "optional" in the schema. Bounds
-    mirror the Streamlit number_inputs (lines 1255-1264).
+    fields gracefully — they're tagged "optional" in the schema.
     """
 
     c_pct: float | None = Field(default=None, ge=0.0, le=1.5)
@@ -154,10 +146,8 @@ class AlAdvisoryRequest(BaseModel):
     """AI-cycle input — full heat context for advisor + critic.
 
     The cycle is a single LLM round-trip per agent (~80 s advisor +
-    ~80 s critic = ~3 min total). Field bounds mirror the Streamlit
-    AI sub-tab (``app/frontend/app.py`` lines 1234-1268) plus an
-    opt-in ``save_to_decision_log`` flag — Streamlit always saves;
-    the API exposes the choice so automated/test callers can submit
+    ~80 s critic = ~3 min total). Includes an opt-in
+    ``save_to_decision_log`` flag so automated/test callers can submit
     without polluting the audit trail.
     """
 
@@ -197,8 +187,8 @@ class AlAdvisoryRequest(BaseModel):
         default=False,
         description=(
             "Opt-in audit-trail save with tag 'deoxidation_cycle'. "
-            "Streamlit defaults to true; the API defaults to false to "
-            "keep test/automation flows quiet."
+            "Default false to keep test/automation flows quiet — the UI "
+            "exposes a «Сохранить» toggle to flip it explicitly."
         ),
     )
 
@@ -262,14 +252,12 @@ def _deox_warnings_for_inverse(
 ) -> list[dict[str, Any]]:
     """Run DX patterns relevant to the inverse path.
 
-    Streamlit (line 1152-1155) only feeds ``effective_purity_pct`` into the
-    pattern run, so DX01/DX02 don't fire there. We extend this slightly:
-    feed the before/after pair too, so a sensor-out-of-range condition
-    (DX01 on ``o_a_before_ppm``) still surfaces as a warning even in the
-    inverse mode. This is strictly additive — Streamlit cannot mis-fire
-    here because DX02 would only trigger when after >= before, which
-    ``compute_al_quality`` already rejects with ValueError before we get
-    here.
+    The pattern run feeds ``effective_purity_pct`` plus the before/after
+    pair so a sensor-out-of-range condition (DX01 on ``o_a_before_ppm``)
+    still surfaces as a warning even in the inverse mode. DX02 cannot
+    mis-fire here because it would only trigger when after >= before,
+    which ``compute_al_quality`` already rejects with ValueError before
+    we get here.
     """
     ctx = {
         "o_a_initial_ppm": o_a_before_ppm,
@@ -346,8 +334,7 @@ def forward(req: AlDemandRequest) -> dict[str, Any]:
         3) Backend ``compute_al_demand`` may raise ValueError on
            edge-case inputs (purity / burn_off out of (0, 100]) — we
            surface those as 400 too. ``target >= initial`` does NOT raise;
-           the backend returns a result with al_total_kg=0 and a warning,
-           which is the Streamlit behaviour.
+           the backend returns a result with al_total_kg=0 and a warning.
     """
     _validate_model_id(req.model_id)
     try:
@@ -417,9 +404,8 @@ def compare(req: AlDemandRequest) -> dict[str, Any]:
           "pattern_warnings": [...],                 # same context as forward
         }
 
-    ``spread_pct`` mirrors Streamlit's caption (line 1203): the relative
-    disagreement between models. UI uses it for the "academic uncertainty"
-    note.
+    ``spread_pct`` is the relative disagreement between models. UI uses
+    it for the "academic uncertainty" note.
     """
     _validate_model_id(req.model_id)
     payload = req.model_dump()
@@ -475,12 +461,11 @@ def _check_cancelled(progress: Any) -> bool:
 def _build_heat_context(req: AlAdvisoryRequest) -> dict[str, Any]:
     """Project the request into the dict shape the advisor/critic expect.
 
-    Mirrors Streamlit ``app/frontend/app.py`` line 1304-1319
-    (``heat_context = {...}``). Composition fields with None values are
-    dropped from the dict so the LLM payload doesn't carry "null" keys
-    that the prompt isn't tuned for. ``mn_s_ratio`` is a derived feature
-    the prompt explicitly references — compute it when both Mn and S
-    are present, skip otherwise.
+    Composition fields with None values are dropped from the dict so the
+    LLM payload doesn't carry "null" keys that the prompt isn't tuned
+    for. ``mn_s_ratio`` is a derived feature the prompt explicitly
+    references — compute it when both Mn and S are present, skip
+    otherwise.
     """
     comp_in = req.composition
     composition: dict[str, float] = {}
@@ -495,7 +480,8 @@ def _build_heat_context(req: AlAdvisoryRequest) -> dict[str, Any]:
     if comp_in.p_pct is not None:
         composition["p_pct"] = float(comp_in.p_pct)
     if comp_in.mn_pct is not None and comp_in.s_pct is not None:
-        # Mirror Streamlit's mn_s_ratio = mn / max(s, 1e-6) (line 1315).
+        # Derived: mn_s_ratio = mn / max(s, 1e-6) — matches the prompt's
+        # vocabulary and avoids div-by-zero on trace-S heats.
         composition["mn_s_ratio"] = float(
             comp_in.mn_pct / max(float(comp_in.s_pct), 1e-6)
         )
@@ -554,7 +540,7 @@ def _run_ai_cycle_job(
         progress(0.05, "Считаю 3 thermo-модели…")
 
     # Stage 1 — sync thermo math. compare_all_models doesn't accept a
-    # model_id, so we just run all three (matches Streamlit line 1292).
+    # model_id, so we just run all three.
     cmp_res = compare_all_models(
         o_a_initial_ppm=req.o_a_initial_ppm,
         target_o_a_ppm=req.target_o_a_ppm,

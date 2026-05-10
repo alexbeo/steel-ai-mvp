@@ -1,8 +1,7 @@
 // Tab — Следующие эксперименты (cost-weighted Expected Improvement).
 //
-// Streamlit parity reference: app/frontend/app.py lines 2221-2502
-// (with tab_al:). Top-K candidates ranked by EI / cost — prefers
-// cheap experiments with high expected uplift on the target property.
+// Top-K candidates ranked by EI / cost — prefers cheap experiments with
+// high expected uplift on the target property.
 //
 // Data flow:
 //   GET  /api/system/models                  → {items, count}
@@ -11,9 +10,8 @@
 //   POST /api/active-learning/propose        → {candidates, baseline, model, …}
 //
 // Class gate: backend rejects non-fatigue_carbon_steel models with 400.
-// We mirror Streamlit (line 2268) by surfacing a clear banner when the
-// active model isn't fatigue_carbon_steel — better UX than waiting for
-// the round-trip.
+// The view also surfaces a clear banner when the active model isn't
+// fatigue_carbon_steel — better UX than waiting for the round-trip.
 //
 // PR 5 of the Streamlit→FastAPI migration. See
 // docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md.
@@ -65,7 +63,7 @@ function formatNumber(value, decimals) {
 }
 
 function formatDelta(value, decimals, unit) {
-  // Streamlit-style ±N delta. Returns plain string (caller decides how to wrap).
+  // ±N delta. Returns plain string (caller decides how to wrap).
   if (value == null || Number.isNaN(value)) return '—';
   const sign = value > 0 ? '+' : '';
   return `${sign}${Number(value).toFixed(decimals)}${unit ? ` ${unit}` : ''}`;
@@ -170,7 +168,7 @@ function buildSkeleton() {
     modelMeta,
   );
 
-  // Inputs grid: n_samples / top_k / seed (mirror Streamlit lines 2291-2302).
+  // Inputs grid: n_samples / top_k / seed.
   const nSamplesInput = el('input', {
     type: 'number',
     class: 'al-input',
@@ -623,7 +621,7 @@ function exportCandidatesCsv(data) {
   // Columns mirror the on-screen table. Composition / process_params are
   // collapsed into one space-separated ``key=value`` cell each (the table
   // shows them as a multi-line cell — flat string is good enough for CSV
-  // consumers). Numeric formatting matches the original Streamlit export.
+  // consumers).
   const headers = [
     'rank', 'id', 'is_ood', 'predicted_property_mpa',
     'lower_90', 'upper_90', 'acquisition_score', 'expected_improvement',

@@ -28,7 +28,7 @@ API_VERSION = "0.1.0"  # bumped manually until pyproject.toml exists
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 STATIC_DIR = PROJECT_ROOT / "app" / "web" / "static"
 
-# Load .env mirroring app/frontend/app.py — best-effort (no-op if dotenv missing)
+# Load .env from project root — best-effort (no-op if dotenv missing).
 try:
     from dotenv import load_dotenv
 

@@ -8,9 +8,7 @@ running as a long-running job. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Прогноз»).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 685-870
-(``with tab_predict:`` block — including the anomaly explainer
-expander at lines 793-901). The flow:
+Flow:
 
     composition (dict) → DataFrame → compute_features_for_class()
     → load_model() → predict_with_uncertainty() → response
@@ -34,14 +32,14 @@ out in the design doc:
     the suffix communicates intent better than ``/run``.»
 
 PR 7 wide-CI heuristic (added with PR 12):
-The Streamlit UI auto-shows the explainer button when the prediction
-is OOD *or* the 90% CI is wide relative to the target's normal range
-(line 793-803). The API surfaces the same boolean as
-``response.prediction.wide_ci`` so the JS view can drive the button
-visibility without re-implementing the heuristic. Threshold:
-``ci_width > 0.5 * target_normal_range`` when the active class
-profile's target has a known range; falls back to
-``(q95-q05)/mean > 0.20`` (>20% relative half-width) otherwise.
+The UI auto-shows the explainer button when the prediction is OOD
+*or* the 90% CI is wide relative to the target's normal range. The
+API surfaces the same boolean as ``response.prediction.wide_ci`` so
+the JS view can drive the button visibility without re-implementing
+the heuristic. Threshold: ``ci_width > 0.5 * target_normal_range``
+when the active class profile's target has a known range; falls
+back to ``(q95-q05)/mean > 0.20`` (>20% relative half-width)
+otherwise.
 
 Cooperative cancellation (PR 12 anomaly-explain only):
 ``check_llm_ready`` fails fast at submit time on missing API key
@@ -79,10 +77,10 @@ router = APIRouter()
 
 
 # Fallback relative half-width threshold. Any profile target with a
-# concrete ``range`` overrides this with ``ci_width / target_span > 0.5``
-# (Streamlit parity, line 801). Pure relative half-width is only used
-# when the profile's target metadata lacks a range — defensive default
-# tuned so the explainer button doesn't flash on every prediction.
+# concrete ``range`` overrides this with ``ci_width / target_span > 0.5``.
+# Pure relative half-width is only used when the profile's target
+# metadata lacks a range — defensive default tuned so the explainer
+# button doesn't flash on every prediction.
 _WIDE_CI_RELATIVE_THRESHOLD = 0.20
 
 
@@ -96,7 +94,7 @@ def _compute_wide_ci_flag(
 ) -> tuple[bool, float]:
     """Return ``(is_wide, threshold_used)`` for the prediction CI.
 
-    Mirrors Streamlit lines 793-803:
+    Primary path:
         target_range = profile.target_properties[target].range
         target_span = target_range[1] - target_range[0]
         wide_ci = (q95 - q05) > 0.5 * target_span
@@ -132,9 +130,9 @@ class PredictRequest(BaseModel):
 
     ``composition`` keys must cover the model's class ``feature_set``
     exactly (order doesn't matter; extra keys are ignored). Missing
-    keys → 400. Streamlit always submits a complete form because it
-    builds inputs from ``feature_set``, so the strict-coverage rule
-    just makes that contract explicit at the API boundary.
+    keys → 400. The strict-coverage rule mirrors what the UI form
+    submits (built from ``feature_set``) and makes that contract
+    explicit at the API boundary.
     """
 
     model_version: str = Field(..., description="Version directory name under models/")
@@ -144,7 +142,7 @@ class PredictRequest(BaseModel):
 
     model_config = {
         # ``model_*`` is reserved by Pydantic v2 for internal config; turn off the
-        # warning so we can keep the field name aligned with Streamlit semantics.
+        # warning so we can keep the field name aligned with the rest of the API.
         "protected_namespaces": (),
     }
 
@@ -215,10 +213,10 @@ def predict(req: PredictRequest) -> dict[str, Any]:
         ) from exc
 
     # -------- 3. Validate composition keys cover feature_set -----------
-    # Streamlit form builds inputs from profile.feature_set, so a
-    # missing key here means the caller is hitting the API directly
-    # without sending all required fields. 400 is correct (client
-    # error), and we name the missing keys for actionable debugging.
+    # The UI form builds inputs from profile.feature_set, so a missing
+    # key here means the caller is hitting the API directly without
+    # sending all required fields. 400 is correct (client error), and
+    # we name the missing keys for actionable debugging.
     required = set(profile.feature_set)
     provided = set(req.composition.keys())
     missing = sorted(required - provided)
@@ -264,7 +262,7 @@ def predict(req: PredictRequest) -> dict[str, Any]:
     ood_flag = bool(row["ood_flag"])
     log_density = float(row["log_density"])
 
-    # Resolve target label from profile (Streamlit parity, line 772-776).
+    # Resolve target label from profile.
     # Fallback chain: profile match → bare ``target`` id → "Прогноз" so the
     # UI never renders an empty string ("null"-looking metric heading) when
     # a legacy meta.json has no ``target`` and the class profile has no
@@ -275,9 +273,9 @@ def predict(req: PredictRequest) -> dict[str, Any]:
     )
     target_label = target_label or "Прогноз"
 
-    # Derived HSLA features surfaced for the UI, mirroring Streamlit
-    # lines 783-791. We only include them when present (HSLA class with
-    # compute_hsla_features feature engineering).
+    # Derived HSLA features surfaced for the UI. We only include them
+    # when present (HSLA class with compute_hsla_features feature
+    # engineering).
     derived: dict[str, float] = {}
     for col in ("cev_iiw", "pcm", "cen", "microalloying_sum"):
         if col in df_feat.columns:
@@ -347,8 +345,8 @@ class AnomalyExplainRequest(BaseModel):
     the caller already inspected. We trust the caller because the
     detector verdict is also recomputed from the model artifacts on
     the backend; the explicit flag drives the UI's auto-expand
-    behaviour upstream and is echoed in the LLM context for
-    parity with Streamlit (line 863).
+    behaviour upstream and is echoed in the LLM context for the
+    diagnosis prompt.
     """
 
     model_version: str = Field(
@@ -382,8 +380,8 @@ class AnomalyExplainRequest(BaseModel):
         default=False,
         description=(
             "Opt-in audit-trail save with tag 'anomaly_cycle'. "
-            "Streamlit defaults to false (button «Сохранить» pattern); "
-            "the API mirrors that default to keep test/automation flows quiet."
+            "Default false to keep test/automation flows quiet — the UI "
+            "exposes a «Сохранить» button to flip it explicitly."
         ),
     )
 
@@ -411,8 +409,7 @@ def _build_anomaly_context(
 ) -> dict[str, Any]:
     """Assemble the dict consumed by ``AnomalyExplainer.explain``.
 
-    Mirrors Streamlit's tab_predict block (lines 830-868). The
-    explainer accepts:
+    The explainer accepts:
         recipe          — feature → numeric (same keys as df_feat columns
                           that intersect training_ranges)
         training_ranges — feature → [lo, hi] from the model meta
@@ -493,7 +490,7 @@ def _run_anomaly_explain_job(
     (immediately before the LLM call). Per PR 9/10 conventions, the
     gate cannot interrupt an in-flight Sonnet call.
 
-    Returns dict mirroring Streamlit's expander panel:
+    Returns dict consumed by the predict view's anomaly panel:
         {
           "model_version": str,
           "explanation": AnomalyExplanation-asdict | None,

@@ -1,7 +1,6 @@
 // Tab 01 — Дизайн сплава. NSGA-II inverse design, ~40 s through polling.
 //
-// Streamlit parity reference: app/frontend/app.py lines 173-506
-// (`with tab_design:`). The flow:
+// Flow:
 //   GET  /api/system/models                  → {items, count}
 //   GET  /api/system/models/active           → model meta (404 if none)
 //   GET  /api/prices/active                  → seed price snapshot
@@ -585,10 +584,9 @@ function renderResult() {
   const cands = data.candidates || [];
   const currency = data.cost_currency || 'EUR';
 
-  // Summary metrics row. Streamlit parity (app.py lines 383-392):
-  // four metrics + an expander «Причины отсева» when rejection_summary
-  // is non-empty. Plus two baseline cells (FastAPI extras — Streamlit
-  // didn't show them but they are useful context for the chart).
+  // Summary metrics row: four metrics + an expander «Причины отсева»
+  // when rejection_summary is non-empty. Plus two baseline cells —
+  // useful context for the chart.
   const inSpec = cands.filter((c) => c.in_spec).length;
   const oodN = cands.filter((c) => c.is_ood).length;
   const warnN = cands.filter(
@@ -650,10 +648,9 @@ function summaryCell(label, value) {
   );
 }
 
-// Streamlit parity (app.py lines 389-392): if validate_batch reported any
-// rejection reasons, surface them in a collapsible panel. Closed by
-// default — the metric "Отсеяно валидатором" is the always-visible
-// summary; this expander is the drill-down.
+// If validate_batch reported any rejection reasons, surface them in a
+// collapsible panel. Closed by default — the metric "Отсеяно валидатором"
+// is the always-visible summary; this expander is the drill-down.
 function renderRejectionSummary(summary) {
   if (!summary || typeof summary !== 'object') return null;
   const entries = Object.entries(summary).filter(([, v]) => Number(v) > 0);
@@ -986,10 +983,9 @@ async function loadAll() {
       ? activeResp.version
       : state.models[state.models.length - 1].version;
 
-    // Prefer an HSLA model on first paint when available — Streamlit
-    // sidebar always sorts by name so the user sees the latest model
-    // regardless of class. We replicate that, but the class banner
-    // surfaces the "non-HSLA" guard.
+    // Prefer an HSLA model on first paint when available. The model
+    // list is sorted by name so the user sees the latest model regardless
+    // of class; the class banner surfaces the "non-HSLA" guard.
     state.priceSnapshot = snapResp;
 
     renderModelSelect();

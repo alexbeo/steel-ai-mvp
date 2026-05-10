@@ -4,9 +4,6 @@ PR 11 of the Streamlit→FastAPI migration. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Подбор рецепта»).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 1771-2214
-(``with tab_recipe:`` block).
-
 Endpoint:
 - ``POST /api/recipes/ai-cycle`` — submit a paired generator+critic cycle
   (Sonnet PhD designer → ML+cost numerical truth gate → Sonnet PhD critic
@@ -26,8 +23,7 @@ the design doc:
 
 Steel class gate:
 The recipe pair currently runs only against ``fatigue_carbon_steel``
-(real Agrawal NIMS data). Streamlit blocks non-fatigue classes at the
-UI level (line 1824); the API surfaces the same restriction as a 400 so
+(real Agrawal NIMS data). The API returns 400 for any other class so
 test/automation callers see explicit failure rather than a downstream
 NaN cascade.
 
@@ -66,16 +62,15 @@ router = APIRouter()
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Constants — mirror Streamlit (app/frontend/app.py lines 1880-1890)
+# Constants
 # ──────────────────────────────────────────────────────────────────────
 
-# Class gate — same constraint as ``active_learning.py`` (PR 5). Streamlit
-# refuses to run the recipe pair for any non-fatigue class (line 1824).
+# Class gate — same constraint as ``active_learning.py`` (PR 5).
 SUPPORTED_STEEL_CLASS = "fatigue_carbon_steel"
 
-# Decision-vars catalogue mirrors ``scripts/design_recipe_with_critic.py``
-# and Streamlit (lines 1880-1890). Composition + process knobs that
-# downstream LLMs are allowed to recommend.
+# Decision-vars catalogue mirrors ``scripts/design_recipe_with_critic.py``.
+# Composition + process knobs that downstream LLMs are allowed to
+# recommend.
 DESIGN_COMPOSITION = ["si_pct", "mn_pct", "ni_pct", "cr_pct", "cu_pct", "mo_pct"]
 DESIGN_PROCESS = [
     "normalizing_temp_c",
@@ -102,15 +97,14 @@ _DEFAULT_TASK_TEXT = (
 class RecipesAiCycleRequest(BaseModel):
     """Body for ``POST /api/recipes/ai-cycle``.
 
-    Streamlit collects only a free-text task description (line 1853) — the
-    rest of the context (baseline, training_ranges, feature_importance) is
-    derived server-side from the active model. The API mirrors that
-    contract: caller passes ``model_version`` + ``task_text``, the worker
-    builds the full designer context.
+    Caller passes ``model_version`` + ``task_text``; the rest of the
+    context (baseline, training_ranges, feature_importance) is derived
+    server-side from the active model and the worker builds the full
+    designer context.
 
-    ``save_to_decision_log`` is opt-in (default False) so test / automation
-    flows do not pollute the audit trail; Streamlit always saves (line
-    2024-2049).
+    ``save_to_decision_log`` is opt-in (default False) so test /
+    automation flows do not pollute the audit trail; the UI exposes a
+    «Сохранить» toggle to flip it explicitly.
     """
 
     model_version: str = Field(
@@ -127,16 +121,15 @@ class RecipesAiCycleRequest(BaseModel):
         description=(
             "Free-text design task — passed to the designer prompt as the "
             "high-level objective (cost reduction vs σf trade-off, target "
-            "fatigue lift, etc). Default mirrors the Streamlit textarea "
-            "default (app/frontend/app.py line 1848)."
+            "fatigue lift, etc). Default = ``_DEFAULT_TASK_TEXT`` constant."
         ),
     )
     save_to_decision_log: bool = Field(
         default=False,
         description=(
             "Opt-in audit-trail save with tag 'recipe_cycle'. "
-            "Streamlit defaults to true; the API defaults to false to "
-            "keep test/automation flows quiet."
+            "Default false to keep test/automation flows quiet — the UI "
+            "exposes a «Сохранить» toggle to flip it explicitly."
         ),
     )
 
@@ -159,11 +152,10 @@ def _build_designer_context(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build the dict that ``RecipeDesigner.design`` consumes.
 
-    Mirrors Streamlit (``app/frontend/app.py`` lines 1899-1961). Returns a
-    ``(designer_ctx, runtime_state)`` tuple where ``runtime_state`` holds
-    the shared fixtures (bundle, baseline row, feature_list, snapshot)
-    that ``_verify_recipes`` needs without re-loading the model and the
-    Agrawal dataset.
+    Returns a ``(designer_ctx, runtime_state)`` tuple where
+    ``runtime_state`` holds the shared fixtures (bundle, baseline row,
+    feature_list, snapshot) that ``_verify_recipes`` needs without
+    re-loading the model and the Agrawal dataset.
 
     Lazy imports — heavy deps (xgboost, pandas) stay out of the FastAPI
     cold-start path. Tests that monkeypatch the LLM factories don't load
@@ -257,18 +249,16 @@ def _verify_recipes(
 ) -> list[dict[str, Any]]:
     """Run XGBoost predict + ferroalloy cost on each recipe.
 
-    Mirrors Streamlit (``app/frontend/app.py`` lines 1970-2014). Returns a
-    list of asdict-projected recipes with an extra ``ml_verification``
-    block — exactly the shape the recipe critic expects (it reads
-    ``predicted_property`` / ``lower_90`` / ``cost_per_ton`` /
-    ``delta_property`` / ``delta_cost`` / ``ferroalloy_breakdown`` /
-    ``ood_flag``).
+    Returns a list of asdict-projected recipes with an extra
+    ``ml_verification`` block — exactly the shape the recipe critic
+    expects (it reads ``predicted_property`` / ``lower_90`` /
+    ``cost_per_ton`` / ``delta_property`` / ``delta_cost`` /
+    ``ferroalloy_breakdown`` / ``ood_flag``).
 
     Failures in cost compute (e.g. PriceSnapshotIncomplete on a designer-
     proposed alloy not in the seed snapshot) are caught — we set
     ``cost_per_ton=None`` and emit an empty breakdown so the critic still
-    has the property delta to peer-review. Streamlit does the same
-    (lines 1986-1999).
+    has the property delta to peer-review.
     """
     import pandas as pd
 
@@ -359,7 +349,7 @@ def _run_recipe_cycle_job(
     designer and critic), and 0.95 (before save). Per the module
     docstring, the gates are effective only outside an active LLM call.
 
-    Returns a dict mirroring the Streamlit display block:
+    Returns a dict consumed by the recipe view:
         {
           "model_version": str,
           "baseline": {recipe, predicted_property, cost_per_ton},
@@ -419,10 +409,9 @@ def _run_recipe_cycle_job(
         )
 
     recipes = designer.design(designer_ctx)
-    # ``design`` swallows API errors and returns []. We don't promote that
-    # to a job error — Streamlit shows an error message and bails (line
-    # 1965-1967), but the API surfaces the empty list to the caller so the
-    # UI can show the same "0 рецептов" panel without a generic 500.
+    # ``design`` swallows API errors and returns []. We don't promote
+    # that to a job error — surface the empty list to the caller so the
+    # UI can show a "0 рецептов" panel without a generic 500.
 
     if is_cancelled():
         raise RuntimeError("Cancelled by user (after designer, before critic)")
@@ -449,9 +438,9 @@ def _run_recipe_cycle_job(
         verdicts = critic.review(designer_ctx, recipes_with_v)
         review_dicts = [asdict(v) for v in verdicts]
 
-    # Verdict counts — UI builds the summary strip from this. Streamlit
-    # computes the same shape at line 2020-2022; we precompute server-side
-    # so the JS reads numbers directly without filtering the reviews list.
+    # Verdict counts — UI builds the summary strip from this. We
+    # precompute server-side so the JS reads numbers directly without
+    # filtering the reviews list.
     verdict_counts = {"ACCEPT": 0, "REVISE": 0, "REJECT": 0}
     for r in review_dicts:
         v = r.get("verdict")
@@ -538,7 +527,7 @@ def ai_cycle(req: RecipesAiCycleRequest) -> dict[str, Any]:
         1) Pydantic field bounds (task_text length). 422 on miss.
         2) ``_safe_version_dir`` — path traversal guard (CWE-22). 400.
         3) Model directory + meta.json present. 404.
-        4) Steel class is fatigue_carbon_steel (Streamlit constraint). 400.
+        4) Steel class is fatigue_carbon_steel. 400.
         5) ``check_llm_ready`` — ANTHROPIC_API_KEY + both prompt files.
            503 on miss.
         6) Submit job to the singleton store. Return ``{job_id, config}``.

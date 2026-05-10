@@ -1,10 +1,8 @@
 // Price editor component — ferroalloy table with inline edit, YAML upload,
 // and snapshot save (POST /api/prices/upload).
 //
-// PR 7 of the Streamlit→FastAPI migration. Streamlit parity reference:
-// app/frontend/app.py lines 261-338 (`with st.expander("💰 Прайс…")`).
-// Streamlit uses `st.data_editor` with column_config; we replicate the
-// in-place edit affordance with vanilla `<input>` cells + dirty-tracking.
+// PR 7 of the Streamlit→FastAPI migration. Implements the «💰 Прайс материалов»
+// editor with vanilla `<input>` cells + dirty-tracking.
 //
 // Public API:
 //   priceEditor(container, opts) -> { getSnapshot, setSnapshot, destroy }
@@ -26,8 +24,7 @@ const KINDS = ['base', 'ferroalloy', 'pure'];
 
 function elementContentToString(content) {
   if (!content || typeof content !== 'object') return '';
-  // Format: "Mn=0.80;Fe=0.20" — matches the column_config hint Streamlit
-  // shows so power users have visual continuity.
+  // Format: "Mn=0.80;Fe=0.20" — compact one-line representation.
   return Object.entries(content)
     .map(([k, v]) => `${k}=${Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`)
     .join(';');
@@ -396,7 +393,7 @@ export function priceEditor(container, opts = {}) {
 //   - element_content: inline-flow `{Mn: 0.80, Fe: 0.20}`
 //
 // Anything fancier (anchors, multi-line strings, lists) is out of scope —
-// in that case the user can paste JSON via the API or use Streamlit.
+// in that case the user can paste JSON via the API directly.
 //
 // Throws Error with a human-readable message on parse failure.
 function parseYamlSnapshot(text) {

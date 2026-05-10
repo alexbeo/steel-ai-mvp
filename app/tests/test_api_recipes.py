@@ -1,8 +1,5 @@
 """Tests for /api/recipes/ai-cycle — designer + critic LLM cycle (PR 11).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 1771-2214
-(``with tab_recipe:`` block).
-
 Mocking strategy mirrors PR 9 (``test_api_deox_ai.py``) and PR 10
 (``test_api_hypotheses.py``):
     - The router lazy-imports ``make_recipe_designer`` /
@@ -351,9 +348,8 @@ def test_recipes_class_gate_400(
 ) -> None:
     """HSLA model → 400 with explicit "fatigue_carbon_steel" message.
 
-    Streamlit blocks non-fatigue classes at the UI banner (line 1824); the
-    API surfaces the same restriction as a 400 — explicit failure beats
-    silent confusion.
+    The API rejects non-fatigue classes — explicit failure beats silent
+    confusion when the recipe pair has no real-world dataset for them.
     """
     _patch_llm_factories(monkeypatch)
     _patch_context_and_verify(monkeypatch)

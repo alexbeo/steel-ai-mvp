@@ -45,9 +45,9 @@ const DEFAULT_CONFIG = {
   responsive: true,
 };
 
-// Streamlit shows up to 15 features (app.py line 675). Plotly handles
-// 20 comfortably with automargin; we cap there to avoid scroll on
-// fatigue_carbon_steel (24 features). Defensive cap, not an aesthetic.
+// Plotly handles 20 features comfortably with automargin; we cap there
+// to avoid scroll on fatigue_carbon_steel (24 features). Defensive cap,
+// not an aesthetic.
 const MAX_BARS = 20;
 
 const COLOR_BAR = 'rgba(124, 178, 255, 0.85)';

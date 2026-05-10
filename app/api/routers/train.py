@@ -4,8 +4,7 @@ PR 8 of the Streamlit→FastAPI migration. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Обучение»).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 509-680
-(``with tab_train:``). The flow:
+Flow:
 
     class_id → generate dataset → compute_features_for_class
     → train_model (XGBoost + Optuna + quantile regression + OOD GMM)
@@ -68,10 +67,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Default sample sizes mirror Streamlit (lines 580-595): the synthetic
-# generator default is 2500 but UI offers a slider; n_trials default is
-# 40 in Streamlit but we use 30 here — the migration trades a slightly
-# faster default run for the same result quality at MVP scope.
+# Default sample sizes for the request schema. n_trials=30 trades a
+# slightly faster default run for the same result quality at MVP scope
+# vs. older 40-trial defaults.
 DEFAULT_N_SAMPLES = 800
 DEFAULT_N_TRIALS = 30
 DEFAULT_SEED = 42
@@ -96,9 +94,8 @@ class TrainRunRequest(BaseModel):
     437-record Agrawal NIMS parquet). We still validate the bounds so a
     malformed payload fails fast with 422.
 
-    ``n_trials`` mirrors Streamlit slider 10-150 with 5-200 here to
-    accommodate quick smoke tests (n_trials=5 in test_api_train.py)
-    without bumping CI duration.
+    ``n_trials`` accepts 5-200 to accommodate quick smoke tests
+    (n_trials=5 in test_api_train.py) without bumping CI duration.
     """
 
     class_id: ClassIdLiteral = Field(
@@ -267,9 +264,9 @@ def _run_train_job(
     llm_observations: list[dict[str, Any]] | None
     llm_critic = make_llm_critic()
     if llm_critic is None:
-        # No ANTHROPIC_API_KEY → silent skip (matches Streamlit). UI
-        # renders "LLM-Critic disabled" only when this is None vs []
-        # to disambiguate "not configured" from "configured, no findings".
+        # No ANTHROPIC_API_KEY → silent skip. UI renders "LLM-Critic
+        # disabled" only when this is None vs [] to disambiguate "not
+        # configured" from "configured, no findings".
         llm_observations = None
     else:
         if callable(progress):

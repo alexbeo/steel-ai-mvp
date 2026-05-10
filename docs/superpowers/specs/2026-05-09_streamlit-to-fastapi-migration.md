@@ -3,7 +3,7 @@
 > **Регламент:** R-001 Feature Development, Step 2 (Architect).
 > **Автор:** Architect (sub-agent).
 > **Дата:** 2026-05-09.
-> **Статус:** черновик для Step 3 (Orchestrator surfaces open questions to user).
+> **Статус:** **COMPLETED 2026-05-10.** Все 15 PR закоммичены. Streamlit decommissioned в PR 13 (commit `baaae6a`). Multi-stage Dockerfile + HF Spaces metadata в PR 14 (`d879c97`). PR 15 — финальный cleanup мёртвых Streamlit parity references в docstrings/comments.
 
 ## Context
 

@@ -14,7 +14,7 @@ Test isolation strategy:
       meta.json before letting the endpoint read it.
     - For predict tests we send the full feature_set with mid-range values
       drawn from the class profile's physical_bounds, mirroring how the
-      Streamlit UI builds default values.
+      JS form builds default values.
     - For PR 12 anomaly-explain tests we monkeypatch the
       ``app.backend.anomaly_explainer.make_anomaly_explainer`` factory
       with a MagicMock-backed stub so the LLM never gets called. The
@@ -125,7 +125,8 @@ def client() -> TestClient:
 def _midrange_composition(class_id: str) -> dict[str, float]:
     """Build a composition dict of midpoint values from physical_bounds.
 
-    Mirrors Streamlit form defaults (lines 746-748: ``default = (lo + hi) / 2``).
+    Each feature defaults to ``(lo + hi) / 2`` — same convention the JS
+    form uses to seed inputs.
     """
     profile = load_steel_class(class_id)
     return {
@@ -218,7 +219,7 @@ def test_list_models_returns_meta(empty_models_dir: Path, client: TestClient) ->
 
 
 def test_active_model_is_latest(empty_models_dir: Path, client: TestClient) -> None:
-    """Active model = last entry of sorted dirs (Streamlit parity)."""
+    """Active model = last entry of sorted dirs."""
     for version in ["aaa_old", "ccc_latest", "bbb_mid"]:
         d = empty_models_dir / version
         d.mkdir()

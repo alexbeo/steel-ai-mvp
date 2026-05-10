@@ -5,8 +5,8 @@ Trains a full-artifact model (main + q05/q95 + OOD detector + meta) on the
 real 437-record Agrawal 2014 NIMS fatigue dataset using the project's
 standard ModelTrainerAgent path. Unlike scripts/evaluate_agrawal_fatigue.py
 which only prints metrics, this script persists the model to
-models/<version>/ so that it becomes selectable in the Streamlit UI
-sidebar dropdown.
+models/<version>/ so that it becomes selectable in the FastAPI UI
+model dropdown.
 
 Output meta.json carries `data_source` + `data_source_doi` from the
 fatigue_carbon_steel profile — first model in the project's history that

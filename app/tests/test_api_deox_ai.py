@@ -1,8 +1,5 @@
 """Tests for /api/deox/ai-cycle — PhD advisor + critic LLM cycle (PR 9).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 1221-1463
-(``with sub_ai:`` block).
-
 Mocking strategy:
     The router invokes ``make_deoxidation_advisor()`` /
     ``make_deoxidation_critic()`` which build real Anthropic clients
@@ -50,7 +47,7 @@ def _ensure_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _baseline_payload(**overrides: object) -> dict:
-    """Sane mid-range LF heat — Streamlit defaults from sub_ai block."""
+    """Sane mid-range LF heat — sub_ai default values."""
     body = {
         "o_a_initial_ppm": 280.0,
         "target_o_a_ppm": 5.0,

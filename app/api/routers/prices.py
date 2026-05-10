@@ -4,9 +4,8 @@ PR 7 of the Streamlit→FastAPI migration. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Дизайн сплава» → price snapshot).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 261-338 — the
-«💰 Прайс материалов» expander shows the seed snapshot, lets the user
-upload a YAML, edits rows in place, and downloads back.
+The «💰 Прайс материалов» editor shows the seed snapshot, lets the
+user upload a YAML, edits rows in place, and downloads back.
 
 Endpoints:
 - ``GET  /api/prices/active`` — return the current active snapshot. We
@@ -109,9 +108,9 @@ class SnapshotUploadRequest(BaseModel):
 def _snapshot_to_dict(snapshot: PriceSnapshot) -> dict[str, Any]:
     """Project a PriceSnapshot dataclass to the JSON shape the UI consumes.
 
-    Mirrors what Streamlit's ``yaml.safe_dump`` would produce — same key
-    layout so the frontend can round-trip through POST /upload without
-    reshaping the body.
+    Same key layout as ``yaml.safe_dump`` of the seed snapshot, so the
+    frontend can round-trip through POST /upload without reshaping the
+    body.
     """
     return {
         "date": snapshot.date.isoformat() if snapshot.date else None,

@@ -418,9 +418,9 @@ def test_propose_class_gate_blocks_hsla(
 ) -> None:
     """HSLA models must be rejected with 400 + clear message.
 
-    Streamlit shows a warning banner and refuses to run on non-fatigue
-    classes (``app/frontend/app.py`` line 2268). The API surfaces the
-    same restriction as a 400 — explicit failure beats silent confusion.
+    Non-fatigue classes are not supported by the active_learner pipeline
+    (no matching real-world dataset wired in). The API surfaces this
+    restriction as a 400 — explicit failure beats silent confusion.
     """
     version = next(hsla_models_dir.iterdir()).name
 

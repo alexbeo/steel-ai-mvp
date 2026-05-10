@@ -4,9 +4,6 @@ PR 10 of the Streamlit→FastAPI migration. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Гипотезы»).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 1474-1764
-(``with tab_hyp:`` block).
-
 Endpoint:
 - ``POST /api/hypotheses/run`` — submit a hypothesis-generation cycle
   (Sonnet PhD generator → Sonnet PhD critic) as a long-running job.
@@ -79,7 +76,7 @@ class HypothesesRunRequest(BaseModel):
     immutable per cycle — Sonnet decides how many to emit between 0 and
     5 — but we expose the field so future prompt revisions that lift
     the cap can pass through a higher value without an API change.
-    Streamlit currently fixes the count at 5; we accept 1-20 here so
+    The UI currently fixes the count at 5; we accept 1-20 here so
     tests can exercise the lower edge and developer flows can ask for
     more if/when the prompt schema is widened.
     """
@@ -103,8 +100,8 @@ class HypothesesRunRequest(BaseModel):
         default=False,
         description=(
             "Opt-in audit-trail save with tag 'hypothesis_cycle'. "
-            "Streamlit defaults to true; the API defaults to false to "
-            "keep test/automation flows quiet."
+            "Default false to keep test/automation flows quiet — the UI "
+            "exposes a «Сохранить» toggle to flip it explicitly."
         ),
     )
 
@@ -148,7 +145,7 @@ def _run_hypothesis_job(
     endpoint (e.g. a future "rerun last cycle" button) still gets the
     path-traversal guard.
 
-    Returns a dict mirroring the Streamlit display block:
+    Returns a dict consumed by the hypotheses view:
         {
           "model_version": str,
           "hypotheses": [Hypothesis-asdict, ...],
@@ -183,10 +180,10 @@ def _run_hypothesis_job(
     if is_cancelled():
         raise RuntimeError("Cancelled by user (before generator LLM call)")
 
-    # Build the artifact context — same shape the Streamlit tab + the
-    # standalone ``scripts/generate_hypotheses_for_model.py`` use. We
-    # reuse ``build_context`` so any future schema change in the
-    # generator's input lands in one place.
+    # Build the artifact context — same shape the standalone
+    # ``scripts/generate_hypotheses_for_model.py`` uses. We reuse
+    # ``build_context`` so any future schema change in the generator's
+    # input lands in one place.
     if callable(progress):
         progress(0.10, "Загрузка модели и датасета")
     from scripts.generate_hypotheses_for_model import build_context
@@ -213,8 +210,8 @@ def _run_hypothesis_job(
 
     hypotheses = generator.generate(ctx)
     # ``generate`` swallows API errors and returns []. We don't promote
-    # that to a job error — Streamlit shows a "0 hypotheses" message in
-    # the same case (line 1568-1572). UI mirrors the behaviour.
+    # that to a job error — the UI shows a "0 hypotheses" message in
+    # the same case.
 
     if is_cancelled():
         raise RuntimeError("Cancelled by user (after generator, before critic)")
@@ -242,9 +239,8 @@ def _run_hypothesis_job(
         review_dicts = [asdict(v) for v in verdicts]
 
     # Verdict counts — UI builds the metric strip ("Гипотез / ACCEPT /
-    # REVISE / REJECT") from this. Streamlit computes the same shape
-    # at line 1580-1582; we precompute server-side so the JS can read
-    # numbers directly without filtering the reviews array.
+    # REVISE / REJECT") from this. We precompute server-side so the
+    # JS can read numbers directly without filtering the reviews array.
     verdict_counts = {"ACCEPT": 0, "REVISE": 0, "REJECT": 0}
     for r in review_dicts:
         v = r.get("verdict")

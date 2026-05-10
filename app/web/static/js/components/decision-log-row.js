@@ -33,8 +33,8 @@ function phaseToPillClass(phase) {
   }
 }
 
-/** Short timestamp like 2026-05-09 12:30 (Streamlit shows 10-char date only;
- *  we add hours/minutes for finer ordering since rows are date-sorted DESC).
+/** Short timestamp like 2026-05-09 12:30 — minute resolution gives finer
+ *  ordering since rows are date-sorted DESC.
  */
 function fmtTimestamp(iso) {
   if (!iso) return '—';
@@ -49,8 +49,8 @@ function fmtTagChip(tag) {
 }
 
 /** Pretty-print the context dict — single source of truth for both the
- *  expanded panel and any future export. JSON.stringify with 2-space indent
- *  matches what Streamlit's `st.json` produces and is mono-font friendly.
+ *  expanded panel and any future export. JSON.stringify with 2-space
+ *  indent is mono-font friendly.
  */
 function fmtContext(ctx) {
   if (!ctx || (typeof ctx === 'object' && Object.keys(ctx).length === 0)) {

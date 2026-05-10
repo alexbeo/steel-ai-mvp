@@ -1,7 +1,5 @@
 """Tests for /api/deox/* — Al deoxidation calculator (PR 4 of FastAPI migration).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 920-1219.
-
 The router wraps ``app.backend.deoxidation`` (already covered by the
 backend's own unit tests) and adds:
   - request validation (Pydantic field bounds + custom 400 on bad model_id)
@@ -27,7 +25,7 @@ def _baseline_forward_payload() -> dict[str, float | str]:
     """Sane mid-range LF heat — no warnings expected.
 
     50 ≤ o_a_initial_ppm ≤ 800 (DX01 bounds), target < initial (DX02 ok),
-    180 t / 1620 °C / 5 ppm target → matches the Streamlit demo defaults.
+    180 t / 1620 °C / 5 ppm target → matches the demo defaults.
     """
     return {
         "o_a_initial_ppm": 280.0,
@@ -166,10 +164,10 @@ def test_forward_validation_422_on_out_of_bounds(client: TestClient) -> None:
 def test_forward_rejects_purity_below_50(client: TestClient) -> None:
     """``al_purity_pct < 50`` is below UI lower bound → API must 422.
 
-    The Streamlit slider (app.py:1059) and the JS form (deox.js
-    ``renderForwardForm`` field) both clamp to 50–100 %. A bare-API call
-    with ``al_purity_pct=30`` previously slipped through Pydantic
-    (``gt=0, le=100``) — defensive parity with the UI requires rejection.
+    The JS form (deox.js ``renderForwardForm`` field) clamps to
+    50–100 %. A bare-API call with ``al_purity_pct=30`` previously
+    slipped through Pydantic (``gt=0, le=100``) — defensive parity
+    with the UI requires rejection.
     """
     payload = _baseline_forward_payload()
     payload["al_purity_pct"] = 30.0  # below 50 % UI floor

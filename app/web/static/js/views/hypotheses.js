@@ -1,7 +1,6 @@
 // Tab 05 — Гипотезы. PR 10 wires hypothesis_generator + critic loop.
 //
-// Streamlit parity reference: app/frontend/app.py lines 1474-1764
-// (`with tab_hyp:`). The flow:
+// Flow:
 //   GET  /api/system/models             → {items, count}        (model dropdown)
 //   GET  /api/system/models/active      → active model meta     (default selection)
 //   POST /api/hypotheses/run {model_version, n_hypotheses, save_to_decision_log}
@@ -68,8 +67,7 @@ function activeModel() {
   );
 }
 
-// Reuse the verdict / novelty / cost label maps from Streamlit
-// (app.py lines 1656-1674) so the badges read identically.
+// Verdict / novelty / cost label maps — Russian glosses for the badges.
 const NOVELTY_LABEL = {
   HIGH: 'ВЫСОКАЯ',
   MEDIUM: 'СРЕДНЯЯ',

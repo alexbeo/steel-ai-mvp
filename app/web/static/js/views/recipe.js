@@ -1,8 +1,7 @@
 // Tab 06 — Подбор рецепта. PR 11 wires recipe_designer + critic loop
 // (fatigue_carbon_steel only).
 //
-// Streamlit parity reference: app/frontend/app.py lines 1771-2214
-// (`with tab_recipe:`). The flow:
+// Flow:
 //   GET  /api/system/models             → {items, count}        (model dropdown)
 //   GET  /api/system/models/active      → active model meta     (default selection)
 //   POST /api/recipes/ai-cycle {model_version, task_text, save_to_decision_log}
@@ -62,7 +61,7 @@ let elements = null;
 
 // ──────────────────── label maps ────────────────────
 
-// Reused vocabulary from PR 10 hypotheses view + Streamlit lines 2089-2102.
+// Reused vocabulary from PR 10 hypotheses view — same Russian glosses.
 const NOVELTY_LABEL = { HIGH: 'ВЫСОКАЯ', MEDIUM: 'СРЕДНЯЯ', LOW: 'НИЗКАЯ' };
 const VERDICT_LABEL = {
   ACCEPT: 'ПРИНЯТО',
@@ -425,8 +424,7 @@ function renderResult() {
     ));
   }
 
-  // Metric strip — baseline + verdict counts (4 cards, mirrors Streamlit
-  // lines 2073-2087).
+  // Metric strip — baseline + verdict counts (4 cards).
   const metricsGrid = el(
     'div',
     { class: 'recipe-metrics-grid' },

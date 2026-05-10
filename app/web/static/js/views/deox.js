@@ -1,9 +1,8 @@
 // Tab 04 — Раскисление. Four sub-tabs: Forward / Inverse / Compare / AI.
 //
-// Streamlit parity reference: app/frontend/app.py lines 920-1463
-// (with tab_deox: → sub_fwd / sub_inv / sub_cmp / sub_ai). The first
-// three are sync calculator forms; the AI sub-tab (PR 9) is the long-
-// running PhD advisor + critic cycle (~3 min) over the JobStore.
+// The first three sub-tabs are sync calculator forms; the AI sub-tab
+// (PR 9) is the long-running PhD advisor + critic cycle (~3 min) over
+// the JobStore.
 //
 // Data flow:
 //   GET  /api/deox/models                  → {items, default}
@@ -110,10 +109,9 @@ function defaultCompare() {
 }
 
 function defaultAi() {
-  // Streamlit parity (app.py lines 1234-1268). Composition defaults to
-  // a generic mid-range HSLA-ish heat — the LLM is instructed to use
-  // the values as soft hints, not constraints. ``operator_notes`` and
-  // ``heat_id`` start empty.
+  // Composition defaults to a generic mid-range HSLA-ish heat — the
+  // LLM is instructed to use the values as soft hints, not constraints.
+  // ``operator_notes`` and ``heat_id`` start empty.
   return {
     o_a_initial_ppm: 280,
     target_o_a_ppm: state.targetOaDefault,

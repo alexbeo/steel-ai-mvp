@@ -1,6 +1,5 @@
 // Tab 08 — История решений проекта.
 //
-// Streamlit parity reference: app/frontend/app.py lines 2505-2572.
 // Data flow:
 //   GET /api/decisions/summary           → {summary_md}
 //   GET /api/decisions?phase=&limit=&offset=  → {items, limit, offset, count}
@@ -12,10 +11,9 @@ import { apiFetch, ApiError } from '../api.js';
 import { el } from '../utils/dom.js';
 import { decisionLogRow } from '../components/decision-log-row.js';
 
-// Phases mirror pattern_library.patterns.Phase + Streamlit's selectbox options.
-// The Streamlit version explicitly excluded "deoxidation" from the dropdown,
-// but it IS a valid phase enum value (DX01-DX03 patterns) so we include it
-// here — strictly an additive change to the parity reference.
+// Phases mirror pattern_library.patterns.Phase. "deoxidation" is a valid
+// phase enum value (DX01-DX03 patterns) so it appears in the dropdown
+// alongside the standard pipeline phases.
 const PHASE_OPTIONS = [
   { value: '', label: 'Все' },
   { value: 'data_acquisition', label: 'data_acquisition' },

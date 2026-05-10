@@ -4,8 +4,7 @@ PR 7 of the Streamlit→FastAPI migration. See
 ``docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md``
 (Endpoint map → Tab «Дизайн сплава»).
 
-Streamlit parity reference: ``app/frontend/app.py`` lines 173-506
-(``with tab_design:`` block). The flow:
+Flow:
 
     composition bounds → NSGA-II (3 obj: distance/cost/uncertainty)
     → validator.validate_batch → Pareto front response
@@ -21,9 +20,9 @@ through the generic ``/api/jobs/{id}`` endpoint as the spec recommends
 (DRY). The result payload exposed there is the dict returned by
 ``_run_design_job`` below, which is already shaped for the UI.
 
-PR 7 — class gate: only ``pipe_hsla`` models accepted (Streamlit
-fallback to "info banner" for non-HSLA classes — see app.py lines
-224-240). Other classes return 400 with a clear message.
+PR 7 — class gate: only ``pipe_hsla`` models accepted. Other classes
+return 400 with a clear message; the UI surfaces the same restriction
+as an info banner upstream.
 
 Risks #3 (SafeJSONResponse): the result dict carries numpy floats from
 NSGA-II / predict_with_uncertainty. ``response_class=SafeJSONResponse,
@@ -55,14 +54,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Streamlit parity: inverse design only runs for HSLA classes in this
-# iteration. Other classes (Q&T, fatigue) lack process-parameter
-# bounds and would crash pymoo on missing columns.
+# Inverse design only runs for HSLA classes in this iteration. Other
+# classes (Q&T, fatigue) lack process-parameter bounds and would crash
+# pymoo on missing columns.
 SUPPORTED_STEEL_CLASS = "pipe_hsla"
 
-# Defaults mirror Streamlit (lines 247-258, 252-253). The slider/number
-# input ranges are clamped here as Pydantic validators so the UI can
-# show identical ranges and the API enforces them at the boundary too.
+# Default knob values for the request schema. The slider/number input
+# ranges are clamped here as Pydantic validators so the UI can show
+# identical ranges and the API enforces them at the boundary too.
 DEFAULT_TARGET_MIN_MPA = 485.0
 DEFAULT_TARGET_MAX_MPA = 580.0
 DEFAULT_CEV_MAX = 0.43
@@ -90,9 +89,9 @@ class TargetRange(BaseModel):
 
 
 class HardConstraints(BaseModel):
-    """Optional CEV/Pcm caps. None → use Streamlit defaults (DEFAULT_CEV_MAX
-    / DEFAULT_PCM_MAX). Empty dict {} also means defaults; omit the
-    constraint to drop it entirely (rare — Streamlit always sends both).
+    """Optional CEV/Pcm caps. None → use defaults (DEFAULT_CEV_MAX /
+    DEFAULT_PCM_MAX). Empty dict {} also means defaults; omit the
+    constraint to drop it entirely (rare — the UI always sends both).
     """
 
     cev_iiw_max: float | None = Field(
@@ -106,14 +105,13 @@ class HardConstraints(BaseModel):
 class DesignRunRequest(BaseModel):
     """Request body for ``POST /api/design/run``.
 
-    Field bounds mirror the Streamlit slider ranges (``app/frontend/app.py``
-    lines 247-258, 256-258). We accept ``price_snapshot`` as an inline
-    dict (same shape as ``GET /api/prices/active`` response) — pass
-    ``None`` (or omit) to fall back to ``seed_snapshot()``.
+    We accept ``price_snapshot`` as an inline dict (same shape as
+    ``GET /api/prices/active`` response) — pass ``None`` (or omit) to
+    fall back to ``seed_snapshot()``.
 
     ``include_cost`` toggles the cost objective: True → use snapshot
-    (or seed), False → run with ``price_snapshot=None`` (matches
-    Streamlit's "Учитывать стоимость" checkbox at line 268).
+    (or seed), False → run with ``price_snapshot=None`` (mirrors the
+    UI's "Учитывать стоимость" checkbox).
 
     Note: NSGA-II is a true multi-objective optimiser — the spec's
     ``cost_weight`` knob is intentionally NOT exposed because the
@@ -143,11 +141,11 @@ class DesignRunRequest(BaseModel):
     )
     population_size: int = Field(
         default=DEFAULT_POPULATION_SIZE, ge=10, le=200,
-        description="NSGA-II population size; Streamlit slider 30-200",
+        description="NSGA-II population size",
     )
     n_generations: int = Field(
         default=DEFAULT_N_GENERATIONS, ge=1, le=200,
-        description="NSGA-II generations; Streamlit slider 20-200",
+        description="NSGA-II generations",
     )
     include_cost: bool = Field(
         default=True,
@@ -164,7 +162,7 @@ class DesignRunRequest(BaseModel):
 
     model_config = {
         # ``model_*`` is reserved by Pydantic v2 for internal config; turn
-        # off the warning so we keep field names aligned with Streamlit.
+        # off the warning so the field name stays a stable kwarg.
         "protected_namespaces": (),
     }
 
@@ -212,7 +210,7 @@ def _resolve_price_snapshot(req: DesignRunRequest) -> PriceSnapshot | None:
 def _hard_constraints_dict(hc: HardConstraints) -> dict[str, dict[str, float]]:
     """Map HardConstraints schema to the dict shape run_inverse_design expects.
 
-    Streamlit always sends both bounds; we mirror that by applying defaults
+    The UI always sends both bounds; we mirror that by applying defaults
     when the user omitted a field. Use of None as "default please" rather
     than 0.0 keeps the Pydantic ge/le validators meaningful.
     """
@@ -343,8 +341,7 @@ def _run_design_job(
     the parameter (see jobs.py docstring). We emit four canonical
     milestones because pymoo's ``minimize`` is a single blocking call —
     no per-generation hook is plumbed yet, so we can't stream true
-    progress. The four-stage UX matches Streamlit's static spinner and
-    is honest about the abstraction.
+    progress. The four-stage UX is honest about the abstraction.
     """
     if callable(progress):
         progress(0.05, "Загрузка модели и проверка прайса")
@@ -377,8 +374,8 @@ def _run_design_job(
     # validate_batch returns approved+rejected with validation injected;
     # rebuild a candidates list preserving NSGA-II ordering. We use the
     # union (approved + rejected) keyed by idx so chart markers can show
-    # rejected candidates in red (Streamlit only shows approved Top-5
-    # but we expose all for the chart).
+    # rejected candidates in red (we expose all for the chart even
+    # though only approved Top-5 surface in the main result table).
     by_idx: dict[int, dict[str, Any]] = {}
     for c in val_result.get("approved", []):
         by_idx[int(c.get("idx", -1))] = c
