@@ -1,6 +1,16 @@
 id: en10083_qt
-name: "Q&T Carbon Steels (EN 10083-2)"
-standard: "EN 10083-2"
+name: "Q&T Carbon Steels — EN 10083-2 carbon grades (C22/C35/C45/C60)"
+standard: "EN 10083-2 (carbon-only subset)"
+# SCOPE NOTE (R-006 audit finding B-3):
+#   This class covers ONLY the carbon Q&T grades C22/C35/C45/C60 from
+#   EN 10083-2. Full EN 10083-2 also includes alloyed grades:
+#     - EN 10083-3: 25CrMo4, 42CrMo4 (Cr-Mo) — needs mo_pct
+#     - EN 10083-3: 34CrNiMo6, 36NiCrMo16 (Cr-Ni-Mo) — needs ni_pct, mo_pct
+#     - EN 10083-3: 51CrV4 (spring) — needs v_pct
+#   To add alloyed grade support: extend feature_set with mo_pct/ni_pct/v_pct,
+#   add physical_bounds for those, update synthetic generator in data_curator
+#   to model their hardenability contribution. Out of MVP scope; tracked as
+#   future work via R-004.
 target_properties:
   - id: hardness_hrc
     label: "Твёрдость, HRC"
@@ -42,6 +52,6 @@ process_params:
   - tempering_time_min
   - section_thickness_mm
 synthetic_generator_name: en10083_qt
-cost_seed_path: data/prices/seed_2026-04-23.yaml
+cost_seed_path: data/prices/seed_2026-04-26.yaml
 feature_engineering: passthrough
 target_o_activity_ppm: 15.0

@@ -13,8 +13,8 @@ pip install -r requirements.txt
 # End-to-end smoke test (~1-2 мин, обязательная проверка после изменений)
 PYTHONPATH=. python scripts/smoke_test.py
 
-# Streamlit UI
-PYTHONPATH=. streamlit run app/frontend/app.py           # localhost:8501
+# FastAPI + vanilla JS UI (Streamlit удалён в PR 13 миграции — см. docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md)
+PYTHONPATH=. uvicorn app.api.main:app --reload --port 8000   # http://localhost:8000/
 
 # CLI-pipeline через Orchestrator + Critic (с human-in-the-loop)
 PYTHONPATH=. python scripts/run_pipeline.py --full
@@ -22,7 +22,7 @@ PYTHONPATH=. python scripts/run_pipeline.py --step data      # только data
 PYTHONPATH=. python scripts/run_pipeline.py --step train     # только train
 PYTHONPATH=. python scripts/run_pipeline.py --step design --target-min 485 --target-max 580
 
-# Docker (одна команда — поднимает Streamlit с volumes для data/models/reports/decision_log)
+# Docker (одна команда — поднимает FastAPI с volumes для data/models/reports/decision_log)
 docker-compose up --build
 
 # Одиночный модуль как demo (большинство backend-файлов имеют __main__ dry-run)
@@ -120,9 +120,10 @@ UI — вкладка «🔥 Раскисление» с 3 sub-tabs (Forward / I
 
 ### UI и API
 
-- `app/frontend/app.py` — Streamlit с **8 вкладками** (Дизайн, Обучение, Прогноз, Раскисление, Гипотезы, Подбор рецепта, Следующие эксперименты, История). Сам импортирует функции напрямую из `app/backend/*` — не через Orchestrator. Для быстрого UX обучение/дизайн запускаются синхронно с прогресс-баром.
-- `app/backend/` содержит намёки на FastAPI, но отдельного `api.py` сейчас нет — FastAPI-слой не реализован.
-- Streamlit опирается на наличие обученных моделей в `models/<version>/`. Если моделей нет — сначала вкладка «Обучение модели».
+- UI = **FastAPI + vanilla JS** на `app/api/main.py:app` (запуск `uvicorn app.api.main:app --port 8000`, открыть `http://localhost:8000/`). Streamlit удалён в PR 13 миграции (см. `docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md`).
+- 8 вкладок (роуты hash-based в `app/web/static/js/router.js`): Дизайн, Обучение, Прогноз, Раскисление (с AI sub-tab + sub-tab «🎯 Оптимизация метода» — slag-aware ASIS deox advisory), Гипотезы, Подбор рецепта, Следующие эксперименты, История.
+- Backend: `app/api/routers/*.py` — REST API. Frontend: `app/web/static/` (HTML + ES modules + CSS, без сборщика). Топбар KPI tирует `/api/system/kpi` каждые 60 с (см. `app/web/static/js/components/topbar.js`).
+- API-эндпоинты опираются на наличие обученных моделей в `models/<version>/`. Если моделей нет — UI показывает баннер «Обучите модель в вкладке Обучение», `/api/system/models/active` отвечает 404.
 - AI-вкладки требуют `ANTHROPIC_API_KEY` в `.env` (gitignored). Без ключа отображают warning и degrade gracefully.
 
 ### AI integration roadmap — все 7 capabilities закрыты (2026-04-25)
@@ -148,6 +149,42 @@ Project pivoted from sales-tool framing to MVP focused on AI-driven pattern disc
 `data_curator.generate_synthetic_hsla_dataset()` создаёт физически правдоподобный синтетический датасет для HSLA-демо. Q&T (`generate_synthetic_en10083_qt_dataset`) — тоже синтетика.
 
 **Класс `fatigue_carbon_steel`** обучается на **реальных 437 records из Agrawal NIMS 2014** (DOI 10.1186/2193-9772-3-8). Loader — `load_real_agrawal_fatigue_dataset()`. Это первая (и сейчас единственная) production-модель на real-world data; все AI-capabilities верифицированы именно на ней.
+
+## Working as a team — Orchestrator behavior
+
+This project uses a **regulated agent team** rather than ad-hoc handling. Default behavior of the main Claude Code session is the **Orchestrator role**:
+
+1. **On every user request**, classify the type and look up `.claude/regulations/REGISTRY.md` for a matching regulation `R-XXX`.
+2. **If a regulation matches** → follow it step-by-step, delegating each step to the named subagent (one of 7 in `.claude/agents/`).
+3. **If no regulation matches** → ask the user: «Создать новый регламент R-XXX для этого типа задачи?». If yes, spawn `steel-regulation-architect` to author it, then follow it. If no, handle ad-hoc and note it as an exception.
+4. **Never invent process on the fly.** REGISTRY.md is the single source of truth for "what regulation applies".
+
+### Subagents (7 in `.claude/agents/`)
+- `steel-architect` — design docs (no code)
+- `steel-developer` — implementation (no design decisions)
+- `steel-reviewer` — code review (ACCEPT / REQUEST-CHANGES / REJECT)
+- `steel-qa` — tests + smoke + regression
+- `steel-domain-expert` — dispatcher to 14 PhD/expert skills
+- `steel-mlops` — git, deploy, audit trail, releases
+- `steel-regulation-architect` — authors new R-XXX when authorized
+
+### Regulations (5 base in `.claude/regulations/`)
+- R-001 Feature Development (catch-all for new functionality)
+- R-002 Bug Fix
+- R-003 Add AI Capability (LLM-backed feature)
+- R-004 Add Steel Class
+- R-005 Pattern Library Extension
+
+Additional regulations (R-006+) are created **lazily** when the first matching request arrives. Don't pre-build.
+
+### Memory discipline
+- `.claude/regulations/REGISTRY.md` and `README.md` are short and always loaded
+- Individual `R-XXX-*.md` files are loaded only when matched
+- Skills (19 in `.claude/skills/`) auto-activate by description match — never load all
+- Each subagent runs in isolation; only structured Markdown reports flow between them
+- Don't keep full file diffs or transcripts in main session — reference SHAs and paths
+
+See `.claude/regulations/README.md` for full operating model.
 
 ## Языковая конвенция
 

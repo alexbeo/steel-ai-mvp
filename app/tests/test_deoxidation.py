@@ -35,9 +35,22 @@ def test_sigworth_elliott_log_k_at_1873K():
 
 
 def test_hayashi_log_k_at_1873K():
+    """log_k(T=1873 K, 1600°C) = 62780/1873 - 19.18 ≈ +14.337.
+
+    Regression test for R-006 audit finding A-3 (Hayashi sign inversion).
+    Earlier draft had `-62780/T + 19.18` which gave -14.337 — wrong by 28
+    orders of magnitude vs canonical Al-O equilibrium (~+13 to +14 across
+    Fruehan, Sigworth-Elliott, Seo 1998, Ishfaq-Pande 2024).
+    Verified 2026-04-26 via WebSearch + R-006 audit.
+    """
     model = THERMO_MODELS["hayashi_2013"]
-    # -62780/1873 + 19.18 ≈ -14.337
-    assert model.log_k(1873.0) == pytest.approx(-14.337, abs=0.01)
+    log_k = model.log_k(1873.0)
+    # Must be positive and in the canonical Al-O equilibrium range (~+13 to +15).
+    assert log_k == pytest.approx(14.337, abs=0.01)
+    assert 13.0 < log_k < 15.0, (
+        f"log K={log_k:+.3f} outside canonical +13..+15 — "
+        "sign inversion regression. See R-006 audit finding A-3."
+    )
 
 
 from app.backend.deoxidation import compute_al_demand  # noqa: E402

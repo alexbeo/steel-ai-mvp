@@ -14,9 +14,21 @@ gplearn>=0.4  # symbolic regression (B1 from AI integration roadmap)
 pyarrow>=13.0  # parquet
 pyyaml>=6.0
 
-# Web / UI
-streamlit>=1.28
+# Web / UI — Streamlit decommissioned in PR 13 of the FastAPI migration
+# (see docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md).
+# UI is now FastAPI + vanilla JS in app/web/static/.
+fastapi>=0.104
+uvicorn>=0.24
 
 # LLM agents (опционально — для Critic v2 с LLM-exploratory)
 anthropic>=0.18
 python-dotenv>=1.0
+
+# Public-data spike (опционально — scripts/fetch_public_steel_data.py)
+matminer>=0.10
+
+# Dev / tests
+pytest>=7.4
+pytest-cov>=4.1
+ruff>=0.1
+openpyxl>=3.1   # для чтения Agrawal NIMS xlsx

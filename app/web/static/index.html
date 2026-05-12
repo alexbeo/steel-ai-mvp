@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1440">
+  <title>STEEL.AI — HSLA Pipeline · Decision Support System</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/overrides.css">
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <!-- ───────── Top bar ───────── -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">SAI</div>
+        <div class="brand-text">
+          <div class="brand-name">STEEL.AI</div>
+          <div class="brand-sub">HSLA Pipeline</div>
+        </div>
+      </div>
+
+      <!-- KPI strip — live values populated by js/components/topbar.js (PR 13). -->
+      <div class="topbar-section" data-region="kpi-strip">
+        <div class="meta-cell">
+          <span class="meta-label">Активная модель</span>
+          <span class="meta-value mono" data-kpi="active_model">—</span>
+        </div>
+        <div class="meta-cell">
+          <span class="meta-label">Model R²</span>
+          <span class="meta-value mono" data-kpi="model_r2">—</span>
+        </div>
+        <div class="meta-cell">
+          <span class="meta-label">Coverage 90% CI</span>
+          <span class="meta-value mono" data-kpi="coverage_90_ci">—</span>
+        </div>
+        <div class="meta-cell">
+          <span class="meta-label">Pareto size</span>
+          <span class="meta-value mono" data-kpi="last_pareto_size">—</span>
+        </div>
+        <div class="meta-cell">
+          <span class="meta-label">PhD-рецензий / нед.</span>
+          <span class="meta-value mono" data-kpi="phd_reviews_week">—</span>
+        </div>
+      </div>
+
+      <div class="topbar-section">
+        <div class="user">
+          <div class="avatar">АК</div>
+          <div class="meta-cell">
+            <span class="meta-label">Оператор</span>
+            <span class="meta-value">А. Крылов</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ───────── Nav rail ───────── -->
+    <nav class="nav" aria-label="Главная навигация">
+      <div class="nav-group">
+        <div class="nav-group-title">Рабочий процесс</div>
+        <a class="nav-item" href="#/design" data-route="design">
+          <span class="nav-mark">01</span>
+          <span class="nav-label">Дизайн сплава</span>
+        </a>
+        <a class="nav-item" href="#/train" data-route="train">
+          <span class="nav-mark">02</span>
+          <span class="nav-label">Обучение модели</span>
+        </a>
+        <a class="nav-item" href="#/predict" data-route="predict">
+          <span class="nav-mark">03</span>
+          <span class="nav-label">Прогноз</span>
+        </a>
+        <a class="nav-item" href="#/deox" data-route="deox">
+          <span class="nav-mark">04</span>
+          <span class="nav-label">Раскисление</span>
+        </a>
+      </div>
+
+      <div class="nav-divider"></div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">Исследование</div>
+        <a class="nav-item" href="#/hypotheses" data-route="hypotheses">
+          <span class="nav-mark">05</span>
+          <span class="nav-label">Гипотезы</span>
+        </a>
+        <a class="nav-item" href="#/recipe" data-route="recipe">
+          <span class="nav-mark">06</span>
+          <span class="nav-label">Подбор рецепта</span>
+        </a>
+        <a class="nav-item" href="#/experiments" data-route="experiments">
+          <span class="nav-mark">07</span>
+          <span class="nav-label">След. эксперименты</span>
+        </a>
+      </div>
+
+      <div class="nav-divider"></div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">Аудит</div>
+        <a class="nav-item" href="#/history" data-route="history">
+          <span class="nav-mark">08</span>
+          <span class="nav-label">История</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- ───────── Main / view area ───────── -->
+    <main class="main" id="view-root">
+      <section data-view="design">
+        <div class="view-placeholder">
+          <h1>Дизайн сплава</h1>
+          <p class="muted">Скоро. Реализация в PR 7 миграции.</p>
+        </div>
+      </section>
+      <section data-view="train">
+        <div class="view-placeholder">
+          <h1>Обучение модели</h1>
+          <p class="muted">Скоро. Реализация в PR 8 миграции.</p>
+        </div>
+      </section>
+      <section data-view="predict">
+        <div class="view-placeholder">
+          <h1>Прогноз</h1>
+          <p class="muted">Скоро. Реализация в PR 3 миграции.</p>
+        </div>
+      </section>
+      <section data-view="deox">
+        <div class="view-placeholder">
+          <h1>Раскисление</h1>
+          <p class="muted">Скоро. Реализация в PR 4 миграции.</p>
+        </div>
+      </section>
+      <section data-view="hypotheses">
+        <div class="view-placeholder">
+          <h1>Гипотезы</h1>
+          <p class="muted">Скоро. Реализация в PR 10 миграции.</p>
+        </div>
+      </section>
+      <section data-view="recipe">
+        <div class="view-placeholder">
+          <h1>Подбор рецепта</h1>
+          <p class="muted">Скоро. Реализация в PR 11 миграции.</p>
+        </div>
+      </section>
+      <section data-view="experiments">
+        <div class="view-placeholder">
+          <h1>Следующие эксперименты</h1>
+          <p class="muted">Скоро. Реализация в PR 5 миграции.</p>
+        </div>
+      </section>
+      <section data-view="history">
+        <div class="view-placeholder">
+          <h1>История</h1>
+          <p class="muted">Скоро. Реализация в PR 2 миграции.</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- ───────── Footer thermal strip ─────────
+         Always-on chrome element sitting below the nav + main grid.
+         Decorative (R-001 Step 4 visual polish): the gradient bar is a
+         qualitative "thermal" reading and the marker positions are
+         hand-set placeholders — when a real LF heat is wired up
+         (out of scope for this PR), the marker percentages will be
+         driven from /api/system/kpi or a similar endpoint. -->
+    <footer class="thermal-footer" data-region="thermal-footer" aria-label="Тепловой профиль">
+      <div>
+        <div class="label">
+          Тепловой профиль ладля
+          <span class="val">tap → SEN</span>
+        </div>
+      </div>
+      <div>
+        <div class="thermal-bar">
+          <div class="marker" style="left:8%"></div>
+          <div class="marker" style="left:32%"></div>
+          <div class="marker" style="left:56%"></div>
+          <div class="marker" style="left:78%"></div>
+          <div class="marker" style="left:94%"></div>
+        </div>
+        <div class="thermal-scale">
+          <span>1500</span><span>1540</span><span>1580</span><span>1620</span><span>1660 °C</span>
+        </div>
+      </div>
+      <div class="hint">
+        <span class="dot"></span>
+        <span>liquidus T<sub>L</sub> ≈ 1502 °C</span>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

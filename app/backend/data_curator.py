@@ -26,17 +26,30 @@ DATA_DIR.mkdir(exist_ok=True)
 def generate_synthetic_hsla_dataset(n_samples: int = 2500, random_seed: int = 42) -> pd.DataFrame:
     """
     Генерирует синтетический HSLA-датасет для MVP-демо.
-    
-    В production заменить на реальную загрузку NIMS/Citrine. Для демо — 
+
+    В production заменить на реальную загрузку NIMS/Citrine. Для демо —
     физически осмысленные данные с известными закономерностями, на которых
     модель должна обучиться.
-    
+
     Закономерности (упрощённо, но физически правдоподобно):
     - σт растёт с C, Mn, Nb, Ti (grain refinement + precipitation)
     - σт уменьшается с S, P (включения, сегрегация)
     - KCV-60 растёт с Ni, убывает с C (выше C -> меньше вязкость)
     - σв коррелирует с σт + вклад от Nb
     - δ (elongation) обратно пропорционально prочности
+
+    KNOWN LIMITATIONS (R-006 audit findings C-1, C-2):
+      C-1: Compositional variables (C, Mn, Cr, Mo, V) sampled INDEPENDENTLY,
+           no constraint that joint Pcm < 0.22 (HSLA weldability limit).
+           Some records will have Pcm > 0.22 — Critic D08 will warn.
+           Mitigation: D08 informational; production deploys should use real
+           HSLA data from NIMS/mill where Pcm distribution is realistic.
+      C-2: σ_t formula is purely linear-additive — no Mn×C synergy, no Nb
+           solubility-product threshold, no Bs-line cooling rate non-linearity.
+           This limits what symbolic regression (B1 capability) can discover
+           because non-linear effects don't exist in the data.
+           Mitigation: real Agrawal NIMS dataset (fatigue_carbon_steel class)
+           does have non-linear effects; B1 demos work better there.
     """
     rng = np.random.default_rng(random_seed)
     

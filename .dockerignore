@@ -1,0 +1,59 @@
+# Python build artifacts
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local secrets
+.env
+.env.*
+
+# Git
+.git/
+.gitignore
+
+# Tests (do not ship to runtime image)
+app/tests/
+
+# Decision Log local DB + price snapshots (gitignored runtime artifacts)
+decision_log/*.db
+decision_log/price_snapshots/
+
+# Local data files (parquet/csv generated locally; runtime should fetch or generate)
+data/*.parquet
+data/*.csv
+data/*.xlsx
+data/public_raw/
+
+# Trained models (large, generated runtime)
+models/
+
+# Generated reports
+reports/
+
+# IDE / OS junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Backup/zip artifacts
+Steel-AI-MVP/
+Steel-AI-MVP.zip
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Documentation reference (optional — keep docs/ in image для context, comment out если image too big)
+# docs/
+
+# CI artifacts
+.github/

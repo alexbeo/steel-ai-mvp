@@ -3,8 +3,10 @@ version: "3.9"
 services:
   steel-ai:
     build: .
+    # Image defaults to PORT=7860 for HF Spaces (Docker SDK). Локально
+    # переопределяем на 8000 (исторический порт docker-compose сетапа PR 13).
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./models:/app/models
@@ -12,5 +14,6 @@ services:
       - ./decision_log:/app/decision_log
     environment:
       - PYTHONPATH=/app
+      - PORT=8000
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}  # опционально для Critic LLM
     restart: unless-stopped

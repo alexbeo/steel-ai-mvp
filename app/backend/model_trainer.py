@@ -15,6 +15,7 @@ import pickle
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -41,6 +42,7 @@ class TrainingMetrics:
     n_test: int
     coverage_90_ci_raw: float = 0.0
     conformal_correction_mpa: float = 0.0
+    quantile_crossing_rate: float = 0.0  # M10: q05 > q95 fraction on test
 
 
 @dataclass
@@ -106,6 +108,7 @@ def train_model(
     n_optuna_trials: int = 40,
     random_seed: int = 42,
     steel_class: str = "pipe_hsla",
+    cancellation_callback: Callable[[], bool] | None = None,
 ) -> TrainedModel:
     import xgboost as xgb  # type: ignore[import-not-found]
     import optuna  # type: ignore[import-not-found]
@@ -125,8 +128,8 @@ def train_model(
     # 2. Hyperparameter search
     def objective(trial):
         params = {
-            "n_estimators": trial.suggest_int("n_estimators", 100, 300),
-            "max_depth": trial.suggest_int("max_depth", 3, 6),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 800),
+            "max_depth": trial.suggest_int("max_depth", 3, 7),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
             "subsample": trial.suggest_float("subsample", 0.7, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.7, 1.0),
@@ -143,7 +146,29 @@ def train_model(
     
     study = optuna.create_study(direction="minimize",
                                 sampler=optuna.samplers.TPESampler(seed=random_seed))
-    study.optimize(objective, n_trials=n_optuna_trials, show_progress_bar=False)
+
+    # Cooperative per-trial cancellation. ``cancellation_callback`` is a
+    # caller-supplied predicate (no args) that returns True when the user
+    # requested cancellation. We call ``study.stop()`` so Optuna finishes
+    # the current trial then exits the loop cleanly. If no callback is
+    # supplied (default), no callbacks list is passed and behaviour is
+    # identical to the pre-PR-8 baseline.
+    def _maybe_stop(study, trial):
+        if cancellation_callback and cancellation_callback():
+            study.stop()
+
+    study.optimize(
+        objective,
+        n_trials=n_optuna_trials,
+        callbacks=[_maybe_stop] if cancellation_callback else [],
+        show_progress_bar=False,
+    )
+    # If cancellation was requested, raise here — even if some trials
+    # completed, we don't want to waste compute on the final retrain.
+    # The router maps "Cancelled by user" → JobStatus.ERROR so the UI
+    # sees the cancel reflected promptly.
+    if cancellation_callback and cancellation_callback():
+        raise RuntimeError("Cancelled by user (Optuna stopped)")
     best_params = study.best_params
     logger.info("Best params: %s (MAE val=%.2f)", best_params, study.best_value)
     
@@ -188,6 +213,11 @@ def train_model(
     raw_upper = quantile_models["q95"].predict(X_test)
     raw_coverage = float(((y_test >= raw_lower) & (y_test <= raw_upper)).mean())
 
+    # M10: quantile crossing rate. Independently-trained q05 and q95 may
+    # produce q05 > q95 for some inputs — a "negative-width" interval.
+    # Skill ml-research-uq-conformal-phd flags >1% as untrustworthy UQ.
+    crossing_rate = float((raw_lower > raw_upper).mean())
+
     lower = raw_lower - conformal_correction
     upper = raw_upper + conformal_correction
     coverage = float(((y_test >= lower) & (y_test <= upper)).mean())
@@ -201,6 +231,7 @@ def train_model(
         coverage_90_ci=coverage,
         coverage_90_ci_raw=raw_coverage,
         conformal_correction_mpa=conformal_correction,
+        quantile_crossing_rate=crossing_rate,
         n_train=len(train_idx), n_val=len(val_idx), n_test=len(test_idx),
     )
     logger.info(
@@ -390,6 +421,7 @@ class ModelTrainerAgent:
                         "r2_test": trained.metrics.r2_test,
                         "mae_test": trained.metrics.mae_test,
                         "coverage_90_ci": trained.metrics.coverage_90_ci,
+                        "quantile_crossing_rate": trained.metrics.quantile_crossing_rate,
                         "feature_importance": trained.feature_importance,
                         "training_ranges": trained.training_ranges,
                         "has_uncertainty": True,

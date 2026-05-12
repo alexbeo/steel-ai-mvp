@@ -141,6 +141,49 @@ def _check_d06_random_split_in_temporal(ctx: dict) -> CheckResult:
     return CheckResult(False)
 
 
+def _check_d08_training_pcm_distribution(ctx: dict) -> CheckResult:
+    """Warn if >5% of training records have Pcm > 0.22 (HSLA standard limit).
+
+    R-006 finding C-1: synthetic HSLA generator doesn't constrain joint Pcm —
+    can produce records that would never pass weldability spec in production.
+    Real-world HSLA datasets cluster around Pcm < 0.20. If training set has
+    significant Pcm > 0.22 mass, the model learns from infeasible-recipe
+    distribution. Informational warning (MEDIUM) — does not block, surfaces
+    drift between synthetic / real data domains.
+
+    Only applies when DataFrame contains C/Mn columns (HSLA-shaped).
+    """
+    df = ctx.get("dataframe")
+    if df is None or "c_pct" not in getattr(df, "columns", []):
+        return CheckResult(False)
+    if "mn_pct" not in df.columns:
+        return CheckResult(False)
+    # Compute Pcm per record (Ito-Bessyo)
+    g = lambda c: df[c].fillna(0) if c in df.columns else 0.0
+    pcm = (
+        g("c_pct")
+        + g("si_pct") / 30
+        + (g("mn_pct") + g("cu_pct") + g("cr_pct")) / 20
+        + g("ni_pct") / 60
+        + g("mo_pct") / 15
+        + g("v_pct") / 10
+        + 5 * g("b_pct")
+    )
+    high_share = float((pcm > 0.22).mean())
+    if high_share > 0.05:
+        return CheckResult(
+            True,
+            message=(
+                f"{high_share:.1%} training records имеют Pcm > 0.22 "
+                f"(HSLA standard weldability limit). Synthetic generator или "
+                f"data source включает recipes, которые не пройдут production "
+                f"weldability gate. Не блокирует, но flag для R-007 enrich."
+            ),
+            details={"share_above_0.22": high_share},
+        )
+    return CheckResult(False)
+
+
 def _check_d07_physical_bounds(ctx: dict) -> CheckResult:
     df = ctx.get("dataframe")
     if df is None:
@@ -226,10 +269,12 @@ def _check_m05_feature_importance_sanity(ctx: dict) -> CheckResult:
     if not expected:
         if ctx.get("steel_class", "") != "pipe_hsla":
             return CheckResult(False)
+        # Sync with data/steel_classes/pipe_hsla.yaml (R-006 finding B-1).
+        # Earlier draft listed `cen`; YAML uses `microalloying_sum`.
         expected = {
             "c_pct", "mn_pct", "nb_pct", "ti_pct", "v_pct",
             "rolling_finish_temp", "cooling_rate_c_per_s",
-            "cev_iiw", "pcm", "cen",
+            "cev_iiw", "pcm", "microalloying_sum",
         }
 
     top_features = sorted(importance.items(), key=lambda x: -x[1])[:5]
@@ -255,6 +300,31 @@ def _check_m06_ood_detection(ctx: dict) -> CheckResult:
             True,
             message="OOD detector не настроен. Inverse design может возвращать кандидатов "
                     "вне training domain, где модель экстраполирует.",
+        )
+    return CheckResult(False)
+
+
+def _check_m10_quantile_crossing(ctx: dict) -> CheckResult:
+    """Detect q05 > q95 cases — produces nonsensical 'negative-width' CIs.
+
+    XGBoost trains q05 and q95 quantile regressors independently — nothing
+    enforces their ordering. Skill ml-research-uq-conformal-phd flags
+    crossing rate > 1% as untrustworthy UQ. R-006 audit finding D-1.
+    """
+    rate = ctx.get("quantile_crossing_rate")
+    if rate is None:
+        return CheckResult(False)
+    if rate > 0.01:
+        return CheckResult(
+            True,
+            message=(
+                f"Quantile crossing rate = {rate:.1%} (>1%): q05 > q95 для "
+                f"{rate * 100:.1f}% точек тестовой выборки. Prediction interval "
+                f"имеет 'отрицательную ширину' для этих точек — UQ ненадёжна. "
+                f"Применить quantile rearrangement (Chernozhukov 2010) или "
+                f"переобучить с меньшей complexity."
+            ),
+            details={"crossing_rate": rate, "threshold": 0.01},
         )
     return CheckResult(False)
 
@@ -306,6 +376,108 @@ def _check_i02_normalized_objectives(ctx: dict) -> CheckResult:
             True,
             message="Multi-objective optimization без нормализации. Различные порядки величин "
                     "будут создавать bias — один objective может полностью подавить другие.",
+        )
+    return CheckResult(False)
+
+
+def _pcm_from_recipe(rec: dict) -> float:
+    """Pcm Ito-Bessyo 1969: C + Si/30 + (Mn+Cu+Cr)/20 + Ni/60 + Mo/15 + V/10 + 5*B."""
+    g = lambda k: float(rec.get(k, 0.0) or 0.0)
+    return (
+        g("c_pct")
+        + g("si_pct") / 30
+        + (g("mn_pct") + g("cu_pct") + g("cr_pct")) / 20
+        + g("ni_pct") / 60
+        + g("mo_pct") / 15
+        + g("v_pct") / 10
+        + 5 * g("b_pct")
+    )
+
+
+def _andrews_ms_from_recipe(rec: dict) -> float:
+    """Andrews 1965: Ms[°C] = 539 − 423·C − 30.4·Mn − 17.7·Ni − 12.1·Cr − 7.5·Mo.
+
+    Verified 2026-04-26 via WebSearch — original Andrews has no Si term.
+    """
+    g = lambda k: float(rec.get(k, 0.0) or 0.0)
+    return (
+        539.0
+        - 423.0 * g("c_pct")
+        - 30.4 * g("mn_pct")
+        - 17.7 * g("ni_pct")
+        - 12.1 * g("cr_pct")
+        - 7.5 * g("mo_pct")
+    )
+
+
+def _check_i04_recipe_pcm_within_limit(ctx: dict) -> CheckResult:
+    """Inverse-design recipe Pcm must respect class weldability limit.
+
+    Limits per skill steel-domain-hsla-x-grade-phd VERIFIED block:
+    - Standard service: 0.22 (API 5L PSL2 / AWS D1.1)
+    - Sour service: 0.18 (NACE MR0175 / ISO 15156)
+    - Arctic: 0.24
+
+    Default threshold 0.22 (HSLA standard); user/class profile can override
+    via ctx["pcm_limit"]. R-006 finding D-2.
+    """
+    recipes = ctx.get("pareto_candidates") or []
+    if not recipes:
+        return CheckResult(False)
+    limit = float(ctx.get("pcm_limit", 0.22))
+    violations = []
+    for i, rec in enumerate(recipes):
+        comp = rec.get("composition") or rec
+        pcm_val = _pcm_from_recipe(comp)
+        if pcm_val > limit:
+            violations.append(f"#{i}: Pcm = {pcm_val:.3f}")
+    if violations:
+        return CheckResult(
+            True,
+            message=(
+                f"Pareto candidates с Pcm > {limit:.2f} (limit per service grade): "
+                + "; ".join(violations[:5])
+                + (f" и ещё {len(violations) - 5}" if len(violations) > 5 else "")
+                + ". Эти рецепты unweldable без preheat — отфильтровать или "
+                f"скорректировать состав (снизить Mn/C/Cr)."
+            ),
+            details={"violations_count": len(violations), "limit": limit},
+        )
+    return CheckResult(False)
+
+
+def _check_i05_andrews_ms_above_threshold(ctx: dict) -> CheckResult:
+    """Andrews Ms must be above brittle-martensite threshold.
+
+    Skill steel-physical-metallurgist-phd VERIFIED block: Ms < 200 °C
+    typically gives retained austenite > 15%, brittle martensite — fail
+    fatigue / impact specs. R-006 finding D-3.
+
+    Threshold configurable via ctx["andrews_ms_min_c"]; default 200 °C.
+    Set to 0 to disable for classes where martensite is undesirable
+    (e.g. ferritic-pearlitic only).
+    """
+    recipes = ctx.get("pareto_candidates") or []
+    if not recipes:
+        return CheckResult(False)
+    threshold = float(ctx.get("andrews_ms_min_c", 200.0))
+    violations = []
+    for i, rec in enumerate(recipes):
+        comp = rec.get("composition") or rec
+        ms = _andrews_ms_from_recipe(comp)
+        if ms < threshold:
+            violations.append(f"#{i}: Ms = {ms:.0f}°C")
+    if violations:
+        return CheckResult(
+            True,
+            message=(
+                f"Pareto candidates с Andrews Ms < {threshold:.0f}°C "
+                f"(retained austenite >15% риск): "
+                + "; ".join(violations[:5])
+                + (f" и ещё {len(violations) - 5}" if len(violations) > 5 else "")
+                + ". Снизить C/Mn/Ni или явно выбрать non-martensitic режим."
+            ),
+            details={"violations_count": len(violations), "threshold_c": threshold},
         )
     return CheckResult(False)
 
@@ -400,6 +572,35 @@ def _check_c02_ferroalloy_content(ctx: dict) -> CheckResult:
             True,
             message="Физически невозможное содержание в ферросплаве: "
                     + "; ".join(violations),
+        )
+    return CheckResult(False)
+
+
+def _check_c05_element_content_sum(ctx: dict) -> CheckResult:
+    """Element content fractions in a material must sum to ~1.0 (incl. C, trace).
+
+    R-006 finding D-4: skill ferroalloy-market-analyst-senior says typical
+    sum is 0.95-1.10 (≥1 because of C in HC FeMn or trace impurities).
+    Sum outside [0.90, 1.15] indicates data-entry error in the YAML snapshot.
+    """
+    materials = ctx.get("snapshot_materials") or []
+    violations = []
+    for m in materials:
+        ec = m.get("element_content") or {}
+        if not ec:
+            continue
+        total = sum(float(v) for v in ec.values())
+        if total < 0.90 or total > 1.15:
+            violations.append(f"{m['id']}: Σelement_content = {total:.3f}")
+    if violations:
+        return CheckResult(
+            True,
+            message=(
+                "element_content сумма вне [0.90, 1.15] (типично 0.95-1.10): "
+                + "; ".join(violations)
+                + ". Возможна ошибка в YAML."
+            ),
+            details={"violations": violations},
         )
     return CheckResult(False)
 
@@ -547,6 +748,16 @@ PATTERNS: list[Pattern] = [
         suggestion="Удалить либо исправить (опечатки типа 3.45→0.345) с audit log.",
     ),
     Pattern(
+        id="D08",
+        title="Training data Pcm distribution exceeds weldability spec",
+        phase=Phase.PREPROCESSING,
+        severity=Severity.MEDIUM,
+        description=">5% training records с Pcm > 0.22 (HSLA standard limit)",
+        check=_check_d08_training_pcm_distribution,
+        suggestion="Constrain synthetic generator joint Pcm OR document training-data "
+                   "drift between synthetic and production HSLA domains.",
+    ),
+    Pattern(
         id="M01",
         title="Overfitting",
         phase=Phase.TRAINING,
@@ -592,6 +803,16 @@ PATTERNS: list[Pattern] = [
         suggestion="Обучить Gaussian Mixture на training composition. Flag на > 3σ от clusters.",
     ),
     Pattern(
+        id="M10",
+        title="Quantile crossing — UQ нарушена",
+        phase=Phase.TRAINING,
+        severity=Severity.HIGH,
+        description="q05 > q95 для >1% тестовых точек — нонсенс negative-width CI",
+        check=_check_m10_quantile_crossing,
+        suggestion="Применить quantile rearrangement (Chernozhukov 2010) или "
+                   "снизить complexity модели. Не доверять CI этой модели.",
+    ),
+    Pattern(
         id="M07",
         title="CV без учёта групп",
         phase=Phase.TRAINING,
@@ -628,6 +849,24 @@ PATTERNS: list[Pattern] = [
         suggestion="Ослабить constraints, расширить bounds, увеличить population size/generations.",
     ),
     Pattern(
+        id="I04",
+        title="Recipe Pcm превышает weldability limit",
+        phase=Phase.INVERSE_DESIGN,
+        severity=Severity.HIGH,
+        description="Pareto candidate имеет Pcm > limit (default 0.22 standard, 0.18 sour)",
+        check=_check_i04_recipe_pcm_within_limit,
+        suggestion="Снизить Mn/C/Cr в рецепте. Для sour service ужесточить limit до 0.18.",
+    ),
+    Pattern(
+        id="I05",
+        title="Andrews Ms < threshold (retained austenite risk)",
+        phase=Phase.INVERSE_DESIGN,
+        severity=Severity.HIGH,
+        description="Pareto candidate даёт Ms < 200°C — retained austenite > 15%",
+        check=_check_i05_andrews_ms_above_threshold,
+        suggestion="Снизить hardenability (C/Mn/Ni) или явно выбрать non-martensitic режим.",
+    ),
+    Pattern(
         id="V01",
         title="Validation без tenant config",
         phase=Phase.VALIDATION,
@@ -656,6 +895,13 @@ PATTERNS: list[Pattern] = [
         description="В contributions есть отрицательный вклад или масса > 1000 кг/т",
         check=_check_c03_corrupt_breakdown,
         suggestion="Баг в compute_cost или в парсинге snapshot.",
+    ),
+    Pattern(
+        id="C05", title="element_content sum вне 0.90-1.15",
+        phase=Phase.INVERSE_DESIGN, severity=Severity.MEDIUM,
+        description="Сумма element_content material'а вне физического диапазона",
+        check=_check_c05_element_content_sum,
+        suggestion="Проверить YAML: типичный diapason 0.95-1.10 (≥1 от C/трейс импурити).",
     ),
     Pattern(
         id="C04", title="Элемент не покрыт прайс-снимком",

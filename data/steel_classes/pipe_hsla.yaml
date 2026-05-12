@@ -31,10 +31,20 @@ feature_set:
   - n_ppm
   - rolling_finish_temp
   - cooling_rate_c_per_s
+# SOUR SERVICE NOTE (R-006 audit finding B-4):
+#   For NACE TM0284 / ISO 15156 / NACE MR0175 sour-service qualification,
+#   tighter limits apply than design-space defaults below:
+#     - Mn ≤ 1.4 (centerline segregation control)
+#     - S ≤ 0.002 (HIC initiation)
+#     - Pcm < 0.18 (enforced via Critic I04 with ctx[pcm_limit]=0.18)
+#     - Ca/S ≥ 2.5 (MnS → CaS modification)
+#     - No B (segregates to centerline → HIC fail)
+#   For sour-mode inverse design: pass pcm_limit=0.18 in ctx, filter
+#   Pareto for Mn ≤ 1.4 post-hoc.
 physical_bounds:
   c_pct: [0.04, 0.12]
   si_pct: [0.15, 0.55]
-  mn_pct: [0.90, 1.75]
+  mn_pct: [0.90, 1.75]      # standard service; sour service tightens to ≤1.4 (see note above)
   p_pct: [0.005, 0.025]
   s_pct: [0.002, 0.012]
   cr_pct: [0.0, 0.30]
@@ -63,6 +73,6 @@ process_params:
   - rolling_finish_temp
   - cooling_rate_c_per_s
 synthetic_generator_name: pipe_hsla
-cost_seed_path: data/prices/seed_2026-04-23.yaml
+cost_seed_path: data/prices/seed_2026-04-26.yaml
 feature_engineering: compute_hsla_features
 target_o_activity_ppm: 5.0

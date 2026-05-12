@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass, asdict, field
 from typing import Any, Literal
 
-from app.backend.prompt_loader import load_prompt_optional
+from app.backend.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class Hypothesis:
     tags: list[str] = field(default_factory=list)
 
 
-_SYSTEM_PROMPT_TEXT = load_prompt_optional("hypothesis_generator")
+_SYSTEM_PROMPT_TEXT = load_prompt("hypothesis_generator")
 
 
 _TOOL_SCHEMA = {
@@ -148,7 +148,6 @@ def _build_user_payload(ctx: dict) -> str:
     top10 = dict(sorted(importance.items(), key=lambda kv: -kv[1])[:10])
 
     payload = {
-        "max_hypotheses": ctx.get("max_hypotheses", 5),
         "steel_class": ctx.get("steel_class"),
         "target": ctx.get("target"),
         "data_source": ctx.get("data_source"),
@@ -305,8 +304,6 @@ def _log_usage(
 
 
 def make_hypothesis_generator() -> HypothesisGenerator | None:
-    if _SYSTEM_PROMPT_TEXT is None:
-        return None  # prompt missing on public clone
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return None
     try:
