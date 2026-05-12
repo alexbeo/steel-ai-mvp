@@ -295,7 +295,7 @@ class SlagAwareDemandResult:
     al_specific_kg_per_ton: float        # кг Al-pure на 1 т стали
     charge_specific_kg_per_ton: float    # кг charge-формы на 1 т стали
     cost_eur: float                      # Total cost €/heat (Al + premium)
-    cost_breakdown: dict                 # {al_commodity_eur, al_premium_eur}
+    cost_breakdown: dict                 # {al_commodity_eur, al_premium_eur, gas_eur, handling_eur}
     cost_per_ton_eur: float
     thermo_model_id: str
     inputs: dict
@@ -544,7 +544,12 @@ def compute_al_demand_slag_aware(
         else 0.0
     )
 
-    cost_eur = al_commodity_eur + al_premium_eur + (gas_eur or 0.0) + handling_eur
+    cost_eur = (
+        al_commodity_eur
+        + al_premium_eur
+        + (gas_eur if gas_eur is not None else 0.0)
+        + handling_eur
+    )
     cost_breakdown = {
         "al_commodity_eur": al_commodity_eur,
         "al_premium_eur": al_premium_eur,
@@ -649,7 +654,7 @@ def _compute_scatter_kg(
     """± диапазон Al-pure (kg) от литературного eta_al_range метода.
 
     Считает Al-pure при eta_lo и eta_hi, возвращает abs(delta). Это
-    grub-оценка scatter для plant-to-plant variability без калибровки.
+    грубая оценка scatter для plant-to-plant variability без калибровки.
     """
     eta_lo, eta_hi = method_obj.eta_al_range
     al_lo = compute_al_demand_slag_aware(
@@ -846,7 +851,8 @@ def recommend_optimal_method(
 
     for row in pareto:
         method_obj = methods[row.method_id]
-        # Фильтр 1: N2-carrier при low-N target
+        # Фильтр 1: дропаем ТОЛЬКО N2-carrier; carrier_gas=None (ingot/granule/cored_wire)
+        # не вносит газ в расплав → [N]-pickup не релевантен.
         if n_constraint_active and method_obj.carrier_gas == "N2":
             rejected.append({
                 "method_id": row.method_id,
