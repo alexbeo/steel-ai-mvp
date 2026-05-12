@@ -697,6 +697,146 @@ def _check_dx03_low_effective_purity(ctx: dict) -> CheckResult:
     return CheckResult(False)
 
 
+def _check_dx04_slag_aware_requires_slag_state(ctx: dict) -> CheckResult:
+    """Slag-aware расчёт требует измеренного состояния шлака переноса.
+
+    Если включён режим ``slag_aware_calculation=True``, но ``slag_state``
+    отсутствует или не содержит ``mass_kg`` / ``feo_pct`` — расчёт даст
+    либо None-data error, либо тихо проигнорирует O в шлаке и получит
+    Al-расход на 20-40% ниже фактического. Блокируем как HIGH.
+    """
+    if not ctx.get("slag_aware_calculation"):
+        return CheckResult(False)
+    slag = ctx.get("slag_state")
+    if slag is None:
+        return CheckResult(
+            True,
+            message=(
+                "Slag-aware расчёт активирован, но slag_state не передан. "
+                "Запросите M_slag и %FeO у LF-оператора или переключитесь "
+                "на basic forward (без учёта шлака)."
+            ),
+            details={"slag_state": None},
+        )
+    mass = getattr(slag, "mass_kg", None) if not isinstance(slag, dict) else slag.get("mass_kg")
+    feo = getattr(slag, "feo_pct", None) if not isinstance(slag, dict) else slag.get("feo_pct")
+    if mass is None or feo is None:
+        return CheckResult(
+            True,
+            message=(
+                "Slag-aware расчёт требует измерение M_slag и %FeO шлака "
+                "переноса. Запросите данные у LF-оператора или используйте "
+                "basic forward."
+            ),
+            details={"mass_kg": mass, "feo_pct": feo},
+        )
+    return CheckResult(False)
+
+
+def _check_dx05_drying_temp_too_high(ctx: dict) -> CheckResult:
+    """T_сушки гранул выше литературного max → H-pickup риск.
+
+    ``method`` (AdditionMethod или dict) с ``t_drying_max_c`` в raw-полях
+    задаёт верхнюю границу. Если ``t_drying_c`` (пользовательский ввод)
+    превышает этот предел — гранулы при сушке частично окисляются и/или
+    впитывают влагу → H-pickup > 2 ppm в расплаве. MEDIUM.
+    """
+    method = ctx.get("method")
+    t_dry = ctx.get("t_drying_c")
+    if method is None or t_dry is None:
+        return CheckResult(False)
+    # method может быть AdditionMethod (с .raw dict) или сырым dict
+    if isinstance(method, dict):
+        raw = method.get("raw") or method
+    else:
+        raw = getattr(method, "raw", None) or {}
+    t_max = raw.get("t_drying_max_c")
+    if t_max is None:
+        return CheckResult(False)
+    if t_dry > t_max:
+        method_id = (
+            method.get("id") if isinstance(method, dict) else getattr(method, "id", "?")
+        )
+        return CheckResult(
+            True,
+            message=(
+                f"Гранулы Al при T_сушки = {t_dry:.0f} °C > {t_max:.0f} °C "
+                f"(лимит метода '{method_id}') дают H-pickup в расплав; "
+                f"снизьте до ≤{int(t_max) - 50} °C или выберите другой метод подачи."
+            ),
+            details={"t_drying_c": t_dry, "t_drying_max_c": t_max},
+        )
+    return CheckResult(False)
+
+
+def _check_dx06_eta_override_outside_range(ctx: dict) -> CheckResult:
+    """Ручной override η_Al вне литературного диапазона метода.
+
+    Если пользователь задал ``user_override_eta_al`` и значение отклоняется
+    от ``method.eta_al_range`` более чем на ±0.05 (за пределами литературного
+    окна) — это сигнал к plant-specific калибровке. MEDIUM (не блокирует,
+    но требует обоснования).
+    """
+    method = ctx.get("method")
+    eta_override = ctx.get("user_override_eta_al")
+    if method is None or eta_override is None:
+        return CheckResult(False)
+    if isinstance(method, dict):
+        eta_range = method.get("eta_al_range")
+    else:
+        eta_range = getattr(method, "eta_al_range", None)
+    if eta_range is None or len(eta_range) != 2:
+        return CheckResult(False)
+    lo, hi = float(eta_range[0]), float(eta_range[1])
+    tolerance = 0.05
+    if not (lo - tolerance <= eta_override <= hi + tolerance):
+        return CheckResult(
+            True,
+            message=(
+                f"η_Al override = {eta_override:.2f} отклоняется от литературного "
+                f"диапазона метода [{lo:.2f}, {hi:.2f}]. Если из исторических "
+                f"данных — рекомендуется калибровка на ≥30 плавках (v0.7)."
+            ),
+            details={
+                "user_override_eta_al": eta_override,
+                "eta_al_range": [lo, hi],
+            },
+        )
+    return CheckResult(False)
+
+
+def _check_dx07_n2_carrier_for_low_n_target(ctx: dict) -> CheckResult:
+    """N₂ как carrier-gas несовместим с target [N] < 50 ppm.
+
+    Pickup [N] при N₂-инжекции 5-15 ppm — для марок с жёстким low-N
+    requirements (sour-service HSLA, IF-steel) недопустимо. Блокируем HIGH.
+    """
+    method = ctx.get("method")
+    target_n = ctx.get("target_n_ppm")
+    if method is None or target_n is None:
+        return CheckResult(False)
+    carrier = (
+        method.get("carrier_gas")
+        if isinstance(method, dict)
+        else getattr(method, "carrier_gas", None)
+    )
+    if carrier != "N2":
+        return CheckResult(False)
+    if target_n < 50.0:
+        method_id = (
+            method.get("id") if isinstance(method, dict) else getattr(method, "id", "?")
+        )
+        return CheckResult(
+            True,
+            message=(
+                f"N₂ как несущий газ (метод '{method_id}') повысит [N] на 5-15 ppm. "
+                f"Для марок с target [N] = {target_n:.0f} ppm < 50 ppm используйте Ar."
+            ),
+            details={"carrier_gas": carrier, "target_n_ppm": target_n},
+        )
+    return CheckResult(False)
+
+
 # =========================================================================
 # Библиотека
 # =========================================================================
@@ -930,6 +1070,43 @@ PATTERNS: list[Pattern] = [
         description="effective_purity_pct < 70% (inverse mode)",
         check=_check_dx03_low_effective_purity,
         suggestion="Проверить поставщика Al или пересмотреть допущение burn_off.",
+    ),
+    Pattern(
+        id="DX04", title="Slag-aware расчёт без измерения шлака",
+        phase=Phase.DEOXIDATION, severity=Severity.HIGH,
+        description="slag_aware_calculation=True, но slag_state/mass/FeO отсутствует",
+        check=_check_dx04_slag_aware_requires_slag_state,
+        suggestion=(
+            "Запросите M_slag и %FeO у LF-оператора или используйте basic "
+            "forward (без учёта шлака переноса)."
+        ),
+    ),
+    Pattern(
+        id="DX05", title="T_сушки гранул выше литературного лимита",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="t_drying_c > method.t_drying_max_c (H-pickup риск)",
+        check=_check_dx05_drying_temp_too_high,
+        suggestion=(
+            "Снизьте T_сушки до ≤150 °C или выберите метод подачи без сушки "
+            "(ASIS-дробь, чушка)."
+        ),
+    ),
+    Pattern(
+        id="DX06", title="η_Al override вне литературного диапазона",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="user_override_eta_al outside method.eta_al_range более чем на ±0.05",
+        check=_check_dx06_eta_override_outside_range,
+        suggestion=(
+            "Если override из исторических данных — провести plant-specific "
+            "калибровку на ≥30 плавках (v0.7 feature)."
+        ),
+    ),
+    Pattern(
+        id="DX07", title="N₂ carrier-gas несовместим с low-N target",
+        phase=Phase.DEOXIDATION, severity=Severity.HIGH,
+        description="method.carrier_gas=='N2' AND target_n_ppm < 50",
+        check=_check_dx07_n2_carrier_for_low_n_target,
+        suggestion="Заменить carrier-gas на Ar для марок с target [N] < 50 ppm.",
     ),
 ]
 
