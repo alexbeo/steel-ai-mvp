@@ -1,0 +1,57 @@
+version: "2026-05-12"
+source: "Литературный обзор (IspatGuru, Sahoo 2006, Metallurgist 2015, русский учебник teeming-ladle) + Excel-калькулятор пользователя (371 т ASIS BOF, k=0.89)"
+notes: "η_Al — литературный консенсус. Plant-specific калибровка по ≥50-100 плавкам — out-of-scope для v0.6 (см. DX06 в Pattern Library). Premium указаны над commodity Al-чушка P0610 (€2.40/kg в seed_2026-04-23.yaml). Для FeAl-30 premium пересчитан в €/kg Al-equivalent."
+
+methods:
+  ingot:
+    name: "Чушка Al (P0610)"
+    size_mm: null               # 1-10 кг масса; size в мм неинформативен
+    surface_m2_per_kg: 0.02
+    eta_al_range: [0.50, 0.65]
+    eta_al_typical: 0.58
+    premium_eur_per_kg: 0.0      # commodity baseline
+    carrier_gas: null
+    notes: "Атмосферное окисление 20-25%, потери в шлак 55-60%, эффективное раскисление ≤20%. Высокий scatter η_Al от плавки к плавке."
+
+  submerged_ingot:
+    name: "Погружной слиток (50-200 кг)"
+    size_mm: null               # 50-200 кг блок
+    surface_m2_per_kg: 0.008
+    eta_al_range: [0.55, 0.70]
+    eta_al_typical: 0.62
+    premium_eur_per_kg: 0.05     # доплата за изготовление + штангу
+    carrier_gas: null
+    notes: "Длительная процедура, риск H₂-pickup. Применяется для крупных плавок без ASIS-инжектора."
+
+  granule_water_quenched:
+    name: "Гранула (water-cast, 5-20 мм)"
+    size_mm: [5.0, 20.0]
+    surface_m2_per_kg: 0.2       # mid of 0.1-0.3 literature range
+    eta_al_range: [0.60, 0.75]
+    eta_al_typical: 0.68
+    premium_eur_per_kg: 0.15
+    carrier_gas: null
+    t_drying_max_c: 200          # критично для DX05 (PR 5): выше 200°C — окисление до подачи
+    notes: "Требует строгого контроля сушки: T_dry ≤ 200°C (иначе предокисление 5-10% Al), при moisture > 0.05% — H₂-pickup > 2 ppm. Промежуточный вариант между чушкой и ASIS-дробью."
+
+  asis_shot:
+    name: "ASIS-дробь (инжекция 1.6-6 мм)"
+    size_mm: [1.6, 6.0]
+    surface_m2_per_kg: 1.7        # 1.6-1.8 mean
+    eta_al_range: [0.75, 0.90]
+    eta_al_typical: 0.82
+    premium_eur_per_kg: 0.30
+    carrier_gas: "Ar"             # required для [N]<50 ppm; N2 допустим если target N relaxed
+    t_drying_max_c: 200
+    notes: "Высокая эффективность за счёт развитой поверхности (×80-90 vs чушка) и инжекции под зеркало. Дозировка ±2-3% vs ±10% для чушки. Применяется для pipeline-марок (sour-service HSLA, low-N IF)."
+
+  cored_wire_feal30:
+    name: "Cored wire FeAl-30 (Ø 9-15 мм)"
+    size_mm: [9.0, 15.0]
+    surface_m2_per_kg: 0.05       # 0.04-0.06 literature
+    eta_al_range: [0.80, 0.95]
+    eta_al_typical: 0.88
+    al_content_pct: 30.0          # ключевое: premium и cost — в €/kg Al-equivalent
+    premium_eur_per_kg: 2.50      # €/kg Al-eq над commodity Al; whole-wire €1.4-1.7/kg → €4.7-5.7/kg Al-eq vs €2.40 baseline
+    carrier_gas: null             # подача через подающую машину, газ не нужен
+    notes: "Самая высокая η_Al и точность дозировки, но 2-3× дороже на kg Al-equivalent. Через feeder идёт ×3.3 mass (FeAl-30). Применяется для LF trim после первичного раскисления."
