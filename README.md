@@ -7,7 +7,7 @@ sdk: docker
 app_port: 7860
 pinned: false
 license: mit
-short_description: Подбор состава стали + раскисление + диагностика рецептов через глубокую нейронную сеть
+short_description: Подбор стали + раскисление через нейронную сеть
 ---
 
 # Steel AI MVP
@@ -19,7 +19,7 @@ short_description: Подбор состава стали + раскислени
 
 ## Что внутри
 
-8 функциональных вкладок UI (FastAPI + vanilla JS):
+8 функциональных вкладок Streamlit:
 
 - **🎯 Дизайн сплава** — multi-objective NSGA-II под целевые свойства + минимум стоимости ферросплавов
 - **🤖 Обучение модели** — XGBoost + quantile regression + conformal calibration
@@ -34,13 +34,12 @@ short_description: Подбор состава стали + раскислени
 
 ```bash
 pip install -r requirements.txt
-PYTHONPATH=. uvicorn app.api.main:app --reload --port 8000
-# → http://localhost:8000/
+PYTHONPATH=. streamlit run app/frontend/app.py
 ```
 
 Для функций с глубокой нейронной сетью (PhD-критик, hypothesis generator,
 recipe designer, anomaly explainer, deoxidation advisor) необходим
-`ANTHROPIC_API_KEY` в `.env` или в HF Spaces secrets.
+`ANTHROPIC_API_KEY` в `.env` или в Streamlit Cloud / HF Spaces secrets.
 
 ## Архитектурные особенности
 

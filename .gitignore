@@ -15,6 +15,9 @@ htmlcov/
 data/*.parquet
 data/*.csv
 data/*.xlsx
+# Open Access NIMS dataset (Agrawal 2014, CC-BY 4.0) — needed for Streamlit Cloud demo / HF Space
+# Tracked via Git LFS pointer (see .gitattributes)
+!data/agrawal_nims_fatigue.parquet
 models/*/
 !models/.gitkeep
 
@@ -25,6 +28,7 @@ reports/*.pdf
 # Decision log (SQLite) + runtime price snapshots (per-run audit YAMLs)
 decision_log/*.db
 decision_log/price_snapshots/
+decision_log/deox_methods_snapshots/
 
 # IDE
 .vscode/
@@ -42,11 +46,14 @@ Thumbs.db
 *.pem
 data/public_matminer.parquet
 data/public_matminer_stats.json
+data/public_raw/
+data/mpea_dataset.parquet
+
+# Gitignored IP — LLM prompts (see prompts/README.md)
 prompts/*.md
 !prompts/README.md
-data/public_raw/
-data/agrawal_nims_fatigue.parquet
-data/mpea_dataset.parquet
+
+# Discovery/spike artifacts
 docs/public_data_spike_metrics.json
 docs/agrawal_dataset_stats.json
 docs/mpea_dataset_stats.json
@@ -56,4 +63,6 @@ docs/a1_uplift_*.json
 docs/b1_formulas_*.json
 docs/property_cost_demo_*.md
 docs/b2_next_experiments_*.md
+
+# Private archive
 /_private_archive/

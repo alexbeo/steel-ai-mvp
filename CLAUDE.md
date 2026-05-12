@@ -121,7 +121,7 @@ UI — вкладка «🔥 Раскисление» с 3 sub-tabs (Forward / I
 ### UI и API
 
 - UI = **FastAPI + vanilla JS** на `app/api/main.py:app` (запуск `uvicorn app.api.main:app --port 8000`, открыть `http://localhost:8000/`). Streamlit удалён в PR 13 миграции (см. `docs/superpowers/specs/2026-05-09_streamlit-to-fastapi-migration.md`).
-- 8 вкладок (роуты hash-based в `app/web/static/js/router.js`): Дизайн, Обучение, Прогноз, Раскисление (с AI sub-tab), Гипотезы, Подбор рецепта, Следующие эксперименты, История.
+- 8 вкладок (роуты hash-based в `app/web/static/js/router.js`): Дизайн, Обучение, Прогноз, Раскисление (с AI sub-tab + sub-tab «🎯 Оптимизация метода» — slag-aware ASIS deox advisory), Гипотезы, Подбор рецепта, Следующие эксперименты, История.
 - Backend: `app/api/routers/*.py` — REST API. Frontend: `app/web/static/` (HTML + ES modules + CSS, без сборщика). Топбар KPI tирует `/api/system/kpi` каждые 60 с (см. `app/web/static/js/components/topbar.js`).
 - API-эндпоинты опираются на наличие обученных моделей в `models/<version>/`. Если моделей нет — UI показывает баннер «Обучите модель в вкладке Обучение», `/api/system/models/active` отвечает 404.
 - AI-вкладки требуют `ANTHROPIC_API_KEY` в `.env` (gitignored). Без ключа отображают warning и degrade gracefully.
