@@ -25,6 +25,7 @@ reports/*.pdf
 # Decision log (SQLite) + runtime price snapshots (per-run audit YAMLs)
 decision_log/*.db
 decision_log/price_snapshots/
+decision_log/deox_methods_snapshots/
 
 # IDE
 .vscode/

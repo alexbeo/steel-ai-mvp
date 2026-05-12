@@ -75,6 +75,7 @@ const state = {
     methods: [],            // [{id, name, eta_al_typical, ...}]
     defaultMethodId: null,
     methodsLoaded: false,
+    methodsLoading: false,  // PR 8 — concurrent-fetch dedup
     saving: false,
   },
 };
@@ -295,12 +296,29 @@ function buildSkeleton() {
 
 function showError(message) {
   if (!elements) return;
+  elements.errorBanner.classList.remove('deox-info');
+  elements.errorBanner.textContent = message;
+  elements.errorBanner.hidden = false;
+}
+
+/**
+ * Surface a non-error message in the same banner slot — green / info
+ * styling instead of red. Used by the «Сохранить рекомендацию» success
+ * path so we don't display a successful save as if it were an error.
+ *
+ * The banner toggles its CSS class via ``deox-info`` (overrides.css);
+ * ``showError`` strips that class so the next failure paints red again.
+ */
+function showInfo(message) {
+  if (!elements) return;
+  elements.errorBanner.classList.add('deox-info');
   elements.errorBanner.textContent = message;
   elements.errorBanner.hidden = false;
 }
 
 function clearError() {
   if (!elements) return;
+  elements.errorBanner.classList.remove('deox-info');
   elements.errorBanner.textContent = '';
   elements.errorBanner.hidden = true;
 }
@@ -1145,7 +1163,14 @@ function buildOptimizeField(key, label, value, opts = {}) {
 }
 
 async function loadOptimizeMethods() {
+  // Two-flag dedup: ``methodsLoaded`` short-circuits the fully-resolved
+  // case; ``methodsLoading`` blocks a second concurrent fetch when the UI
+  // re-enters the optimize sub-tab (or the activateSubtab/loadAll race)
+  // while the first call is still in-flight. Without the in-flight flag
+  // the catalog GET could be hit twice on fast tab clicks (PR 7 nit).
   if (state.optimize.methodsLoaded) return;
+  if (state.optimize.methodsLoading) return;
+  state.optimize.methodsLoading = true;
   try {
     const resp = await apiFetch('/api/deox/methods');
     state.optimize.methods = Array.isArray(resp.items) ? resp.items : [];
@@ -1154,6 +1179,8 @@ async function loadOptimizeMethods() {
   } catch (err) {
     const detail = err instanceof ApiError ? err.message : String(err);
     showError(`Не удалось загрузить каталог методов подачи Al: ${detail}`);
+  } finally {
+    state.optimize.methodsLoading = false;
   }
 }
 
@@ -1194,10 +1221,13 @@ function renderOptimizeForm() {
     el('span', {}, 'Нет данных по шлаку → basic forward (отключить slag-aware)'),
   );
   const slagDisabled = !!v.slag_no_data;
-  const slagAttr = slagDisabled ? { disabled: 'disabled' } : {};
+  // ``disabled`` is an HTML attribute valid only on form controls — putting
+  // it on the wrapping <div> (PR 7 leftover) is harmless but lints poorly
+  // and tricks a11y tools. We only carry the data-attr; the actual
+  // disabling lands on the <input> children below.
   const gridB = el(
     'div',
-    { class: 'deox-form-grid', 'data-block': 'slag', ...slagAttr },
+    { class: 'deox-form-grid', 'data-block': 'slag' },
     buildOptionalField('slag_mass_kg', 'M_slag, кг', v.slag_mass_kg,
       { step: 100, min: 0, max: 10000, decimals: 0,
         placeholder: 'например, 2200' }),
@@ -1484,10 +1514,9 @@ function readOptimizeForm(formRoot) {
       throw new Error('Выберите хотя бы один метод подачи Al');
     }
     out.method_ids = checkedIds;
-  } else {
-    // All selected (or catalog empty) → omit method_ids → backend uses all.
-    // We cache the explicit list in form values for next render's reuse.
   }
+  // When every method is checked (or the catalog is empty / not loaded yet)
+  // we omit ``method_ids`` and the backend iterates the full YAML catalog.
   v.method_ids = totalMethods > 0 && checkedIds.length < totalMethods
     ? checkedIds : [];
 
@@ -1735,28 +1764,45 @@ async function runOptimizeSave() {
     return;
   }
   if (state.optimize.saving) return;
+
+  // PR 8 — Variant A: backend re-executes the recommendation from the same
+  // inputs to keep a single source of truth. We submit the optimize-form
+  // payload, augmented with ``heat_id`` and ``author`` — *not* the
+  // ``data`` recommendation object (UI-state echo would risk drift if the
+  // form was edited after the last run).
+  let body;
+  try {
+    body = readOptimizeForm(elements.formContainer);
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  body.heat_id = null;   // Reserved — heat-id input lives in a future PR
+  body.author = 'user';
+
   state.optimize.saving = true;
   clearError();
   // Re-render so the save button shows the spinner state.
   renderOptimizeResult();
 
   try {
-    await apiFetch('/api/deox/optimize/save', {
+    const resp = await apiFetch('/api/deox/optimize/save', {
       method: 'POST',
-      body: {
-        recommendation: data,
-        heat_id: null,
-        author: 'user',
-      },
+      body,
     });
-    // Unreachable in PR 7 — backend always 501. Kept for PR 8 forward-compat.
-    showError('Рекомендация сохранена в Decision Log.');
+    const decisionId = resp && resp.decision_id;
+    const snapPath = resp && resp.methods_snapshot_path;
+    showInfo(
+      `Рекомендация сохранена в Decision Log (id=${decisionId}). ` +
+      `Snapshot методов: ${snapPath}`,
+    );
   } catch (err) {
     if (err instanceof ApiError && err.status === 501) {
-      // Expected in PR 7 — surface as a friendly info banner, not as error.
+      // Defensive fallback: PR 8 implements the endpoint, but if a stale
+      // backend is hit (e.g. mid-rollout) we still surface a sensible note.
       showError(
         err.message
-          || 'Сохранение Decision Log будет реализовано в PR 8.',
+          || 'Сохранение Decision Log пока недоступно на этом backend.',
       );
     } else {
       const detail = err instanceof ApiError ? err.message : String(err);
@@ -2117,7 +2163,8 @@ export function init(container) {
   state.busy = false;
   state.aiJob = { running: false, pollAbort: null, currentJobId: null };
   state.optimize = {
-    methods: [], defaultMethodId: null, methodsLoaded: false, saving: false,
+    methods: [], defaultMethodId: null,
+    methodsLoaded: false, methodsLoading: false, saving: false,
   };
 
   const skeleton = buildSkeleton();

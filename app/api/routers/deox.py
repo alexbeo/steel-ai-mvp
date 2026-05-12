@@ -43,9 +43,14 @@ way). Documented in the design doc PR 9 row.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import shutil
+import subprocess
 import time
 from dataclasses import asdict
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -66,16 +71,24 @@ from app.backend.deoxidation import (
 )
 from app.backend.slag_aware_deox import (
     DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG,
+    DEOX_METHODS_PATH,
     CoDeoxSi,
     SlagState,
     load_addition_methods,
     recommend_optimal_method,
 )
+from decision_log.logger import log_decision
 from pattern_library.patterns import Phase, run_all_patterns
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# ── Decision Log snapshot paths (PR 8 — slag-aware deox audit trail) ──
+# PROJECT_ROOT mirrors the constant in ``app.api.routers.prices`` so the
+# two routers compute identical paths even if the package is moved.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEOX_METHODS_SNAPSHOTS_DIR = PROJECT_ROOT / "decision_log" / "deox_methods_snapshots"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -289,19 +302,22 @@ class OptimizationRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
 
-class OptimizationSaveRequest(BaseModel):
-    """Placeholder body for ``POST /api/deox/optimize/save`` (PR 8).
+class OptimizationSaveRequest(OptimizationRequest):
+    """Body for ``POST /api/deox/optimize/save`` (PR 8 — Variant A).
 
-    Accepts the full ``OptimizationResponse`` payload (so the frontend
-    doesn't need to re-call /optimize before saving) plus an optional
-    heat identifier. PR 8 will turn this into a Decision Log entry with
-    tag ``deox_method_recommendation``; for PR 6 the handler returns 501.
+    Vorint design decision (see spec §7 + PR 8 task brief):
+    we accept the **full ``OptimizationRequest`` payload** rather than an
+    echo of ``OptimizationResponse``. The endpoint re-executes
+    ``recommend_optimal_method`` server-side using the same inputs, so the
+    Decision Log entry reflects backend truth (single source) — no drift
+    between UI display state and what's persisted in audit trail. Heat
+    identifier + author live alongside the inputs.
+
+    Inherits every field from :class:`OptimizationRequest` (Block A heat,
+    Block B slag, Block C co-deox, Block D methods, Block E constraints,
+    Block F economics) and adds the audit-trail-only fields below.
     """
 
-    recommendation: dict[str, Any] = Field(
-        ...,
-        description="Echo of OptimizationResponse — payload to log.",
-    )
     heat_id: str | None = Field(
         default=None,
         max_length=50,
@@ -1102,33 +1118,247 @@ def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
     }
 
 
+def _git_head_sha() -> str | None:
+    """Best-effort ``git rev-parse HEAD`` for reproducibility metadata.
+
+    Returns the full 40-char SHA when the project sits inside a working
+    git tree; ``None`` otherwise (e.g. a Docker container without the
+    ``.git`` directory). Failures are swallowed silently — this is audit
+    metadata, not a control-flow signal.
+    """
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+        )
+        return out.strip() or None
+    except Exception:  # noqa: BLE001 — best-effort metadata
+        return None
+
+
+def _git_branch() -> str | None:
+    """Best-effort ``git rev-parse --abbrev-ref HEAD`` — same contract as SHA."""
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+        )
+        branch = out.strip()
+        return branch if branch and branch != "HEAD" else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sha256_file(path: Path) -> str:
+    """SHA-256 hex digest of ``path`` (read fully, no streaming).
+
+    The al_addition_methods.yaml catalog is tiny (~3 KB, 5 methods), so
+    we read it all at once rather than chunked-hash for code simplicity.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _snapshot_deox_methods_yaml(
+    *, snapshots_dir: Path, source_yaml: Path
+) -> tuple[Path, str]:
+    """Copy current methods YAML to ``snapshots_dir/<ISO-ts>.yaml`` + hash.
+
+    ISO-timestamp form uses ``-`` separators inside the time component
+    (``2026-05-12T20-30-00``) because ``:`` is illegal in filenames on
+    Windows / macOS-on-FAT. Returns ``(snapshot_path, sha256_hex)``.
+
+    If the source YAML is missing we raise — this is a 500-grade
+    failure (the optimizer that just produced ``rec`` had to read the
+    same file), not a recoverable 400.
+    """
+    if not source_yaml.exists():
+        raise FileNotFoundError(
+            f"Source deox methods YAML not found at {source_yaml}; "
+            "snapshot cannot be taken."
+        )
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    # ``datetime.now()`` (local) — same convention as
+    # ``inverse_designer.run_inverse_design`` for price_snapshots.
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    snapshot_path = snapshots_dir / f"{ts}.yaml"
+    # Collision guard — extremely unlikely on second-level ISO ts, but
+    # cheap to defend against operators clicking «Сохранить» rapidly.
+    if snapshot_path.exists():
+        suffix = 1
+        while (alt := snapshots_dir / f"{ts}_{suffix}.yaml").exists():
+            suffix += 1
+        snapshot_path = alt
+    shutil.copyfile(source_yaml, snapshot_path)
+    sha256 = _sha256_file(snapshot_path)
+    return snapshot_path, sha256
+
+
 @router.post(
     "/optimize/save",
     response_class=SafeJSONResponse,
     response_model=None,
 )
 def save_optimization_recommendation(
-    req: OptimizationSaveRequest,  # noqa: ARG001 — placeholder for PR 8
+    req: OptimizationSaveRequest,
 ) -> dict[str, Any]:
-    """Decision Log integration — PR 8 placeholder (501 NOT IMPLEMENTED).
+    """Persist an optimize recommendation to Decision Log + YAML snapshot.
 
-    The save flow (copy YAML catalog snapshot to
-    ``decision_log/deox_methods_snapshots/<ts>.yaml`` + emit a
-    ``deox_method_recommendation`` Decision Log row) is out of scope for
-    PR 6 — see ``docs/superpowers/specs/2026-05-12_asis-slag-aware-deox.md``
-    §Build sequence row "PR 8".
+    Flow (Variant A — backend recompute, single source of truth):
+        1. Re-validate thermo model + run ``recommend_optimal_method``
+           with the exact same inputs the UI submitted.
+        2. Copy the current ``data/deox_methods/al_addition_methods.yaml``
+           to ``decision_log/deox_methods_snapshots/<ISO-ts>.yaml`` and
+           hash it (SHA-256) for reproducibility.
+        3. Emit a Decision Log row with phase=deoxidation,
+           tags=[deoxidation, asis, deox_method_recommendation,
+           method:<chosen_id>].
 
-    Returning 501 (not 404) keeps the contract explicit: the endpoint
-    exists, the body shape is settled, the persistence is pending.
-    The frontend (PR 7) can already render the «Сохранить» button
-    disabled with a tooltip pointing at this message.
+    The Decision Log save is the *opt-in* part — the user already saw the
+    recommendation on the «Оптимизация метода» tab and clicked «Сохранить»
+    explicitly. Without that click the optimize endpoint is read-only.
+
+    Response shape::
+
+        {
+          "decision_id": <int>,
+          "methods_snapshot_path": "decision_log/deox_methods_snapshots/<ts>.yaml",
+          "methods_snapshot_sha256": "<64-char hex>",
+          "chosen_method_id": "asis_shot",
+          "chosen_cost_eur": 1230.45,
+        }
     """
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Сохранение рекомендации в Decision Log будет реализовано в PR 8 "
-            "(см. docs/superpowers/specs/2026-05-12_asis-slag-aware-deox.md). "
-            "В этой ревизии endpoint возвращает 501 — payload не теряется, "
-            "просто не записывается в БД."
+    _validate_model_id(req.thermo_model_id)
+
+    slag = _build_slag_state(req)
+    co_deox = _build_co_deox(req)
+
+    # Re-execute optimize so the persisted record reflects backend truth
+    # (Variant A). Any ValueError from the optimizer surfaces as 400 —
+    # mirrors the contract of /optimize.
+    try:
+        recommendation = recommend_optimal_method(
+            steel_mass_ton=req.steel_mass_ton,
+            o_a_initial_ppm=req.o_a_initial_ppm,
+            target_o_a_ppm=req.target_o_a_ppm,
+            target_al_pct=req.target_al_pct,
+            slag=slag,
+            co_deox_si=co_deox,
+            temperature_C=req.temperature_C,
+            thermo_model_id=req.thermo_model_id,
+            al_commodity_price_eur_per_kg=req.al_commodity_price_eur_per_kg,
+            method_ids=req.method_ids,
+            target_n_ppm=req.target_n_ppm,
+            premium_cap_eur_per_kg=req.premium_cap_eur_per_kg,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Snapshot methods YAML — required for reproducibility (the audit
+    # entry references a specific file path/hash).
+    try:
+        snapshot_path, snapshot_sha256 = _snapshot_deox_methods_yaml(
+            snapshots_dir=DEOX_METHODS_SNAPSHOTS_DIR,
+            source_yaml=DEOX_METHODS_PATH,
+        )
+    except FileNotFoundError as exc:
+        logger.exception("Methods YAML missing — cannot snapshot")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("Failed to write methods snapshot")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Не удалось сохранить snapshot методов: {exc}",
+        ) from exc
+
+    # Path stored in Decision Log is repo-relative for portability —
+    # avoids absolute paths that would leak the operator's home dir.
+    try:
+        snapshot_rel = snapshot_path.relative_to(PROJECT_ROOT)
+    except ValueError:  # tmp_path test fixture sits outside PROJECT_ROOT
+        snapshot_rel = snapshot_path
+
+    # Slag + co-deox sub-context — only included when populated so the
+    # Decision Log row doesn't carry "null" placeholders for the
+    # basic-forward sanity-check case.
+    slag_state_ctx: dict[str, Any] | None = None
+    if (
+        req.slag_mass_kg is not None
+        or req.slag_feo_pct is not None
+        or req.slag_mno_pct > 0.0
+        or req.slag_sio2_pct > 0.0
+    ):
+        slag_state_ctx = {
+            "mass_kg": req.slag_mass_kg,
+            "feo_pct": req.slag_feo_pct,
+            "mno_pct": req.slag_mno_pct,
+            "sio2_pct": req.slag_sio2_pct,
+        }
+    co_deox_ctx: dict[str, Any] | None = None
+    if req.co_deox_fesi_kg is not None and req.co_deox_fesi_kg > 0.0:
+        co_deox_ctx = {
+            "fesi_kg": req.co_deox_fesi_kg,
+            "si_content_pct": req.co_deox_fesi_si_content_pct,
+        }
+
+    # Top-5 runner-ups by ascending cost — keeps the alternatives list
+    # informative without bloating the Decision Log row.
+    runner_up_ids = [
+        row.method_id for row in recommendation.pareto_table[1:5]
+    ]
+
+    context_payload: dict[str, Any] = {
+        "heat_id": req.heat_id,
+        "branch": _git_branch(),
+        "commit_sha": _git_head_sha(),
+        "slag_state": slag_state_ctx,
+        "co_deox": co_deox_ctx,
+        "thermo_model": req.thermo_model_id,
+        "methods_snapshot_path": str(snapshot_rel),
+        "methods_snapshot_sha256": snapshot_sha256,
+        "al_commodity_price_eur_per_kg": req.al_commodity_price_eur_per_kg,
+        "user_override_eta_al": req.user_override_eta_al,
+        "target_n_ppm": req.target_n_ppm,
+        "premium_cap_eur_per_kg": req.premium_cap_eur_per_kg,
+        "t_drying_c": req.t_drying_c,
+        "chosen_cost_eur": float(recommendation.chosen_cost_eur),
+        "chosen_method_name": recommendation.chosen_method_name,
+        "constraints_active": list(recommendation.constraints_active),
+        "inputs": dict(recommendation.inputs),
+    }
+
+    # ``al_pure_kg`` of the chosen row goes into the decision summary —
+    # it's the single most useful number for a metallurgist scanning the
+    # History tab ("how much Al did we recommend?").
+    chosen_row = recommendation.pareto_table[0] if recommendation.pareto_table else None
+    al_kg_str = f"{chosen_row.al_pure_kg:.1f}" if chosen_row is not None else "?"
+
+    decision_id = log_decision(
+        phase="deoxidation",
+        decision=(
+            f"method={recommendation.chosen_method_id}; "
+            f"al_kg={al_kg_str}; "
+            f"cost={recommendation.chosen_cost_eur:.0f}€"
         ),
+        reasoning=recommendation.rationale,
+        alternatives_considered=runner_up_ids,
+        context=context_payload,
+        author=req.author or "user",
+        tags=[
+            "deoxidation",
+            "asis",
+            "deox_method_recommendation",
+            f"method:{recommendation.chosen_method_id}",
+        ],
     )
+
+    return {
+        "decision_id": decision_id,
+        "methods_snapshot_path": str(snapshot_rel),
+        "methods_snapshot_sha256": snapshot_sha256,
+        "chosen_method_id": recommendation.chosen_method_id,
+        "chosen_cost_eur": float(recommendation.chosen_cost_eur),
+    }

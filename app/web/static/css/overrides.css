@@ -575,6 +575,15 @@
   font-size: 12px;
 }
 
+/* PR 8 — info variant of the same banner element. ``showInfo`` adds this
+   class on top of ``.deox-error`` (the element's base class); the cascade
+   overrides the red/danger triplet so a success message reads green. */
+.deox-error.deox-info {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: var(--success);
+}
+
 .deox-context {
   display: flex;
   gap: 18px;

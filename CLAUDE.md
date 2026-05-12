@@ -114,7 +114,7 @@ Physical bounds и expected top-features для Critic проверок `D07` / 
 
 `app/backend/deoxidation.py` — physics-only калькулятор раскисления жидкой стали алюминием на фазе ladle furnace. Три термодинамические модели в registry (`THERMO_MODELS`): Fruehan 1985 (дефолт), Sigworth-Elliott 1974, Hayashi-Yamamoto 2013. Две функции: `compute_al_demand` (forward — сколько Al подать) и `compute_al_quality` (inverse — эффективная чистота Al по факту плавки) + `compare_all_models` для сравнения 3 формул.
 
-UI — вкладка «🔥 Раскисление» с 3 sub-tabs (Forward / Inverse / Compare). Target O_a читается из активного `SteelClassProfile.target_o_activity_ppm` (HSLA=5, Q&T=15). Pattern Library имеет фазу `Phase.DEOXIDATION` + паттерны `DX01`/`DX02`/`DX03`. Decision Log — **опт-ин** (кнопка «Сохранить») во избежание спама БД на производственном темпе 50-200 плавок/день.
+UI — вкладка «🔥 Раскисление» с 5 sub-tabs (Forward / Inverse / Compare / AI / 🎯 Оптимизация метода). Target O_a читается из активного `SteelClassProfile.target_o_activity_ppm` (HSLA=5, Q&T=15). Pattern Library имеет фазу `Phase.DEOXIDATION` + паттерны `DX01`/`DX02`/`DX03` (forward/inverse) и `DX04-DX07` (slag-aware optimization). Decision Log — **опт-ин** (кнопка «Сохранить») во избежание спама БД на производственном темпе 50-200 плавок/день. Slag-aware endpoints: `GET /api/deox/methods`, `POST /api/deox/optimize`, `POST /api/deox/optimize/save` (recompute + YAML snapshot копия в `decision_log/deox_methods_snapshots/<ISO-ts>.yaml`, tag `deox_method_recommendation`).
 
 **Не входит в MVP**: кинетика растворения Al, баланс FeO в шлаке, комбинированное раскисление (Al+FeSi+Ca), ML, feedback loop, интеграция с анализаторами O. Это фазы v0.6+.
 

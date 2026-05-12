@@ -10,15 +10,56 @@ We don't re-test the physics; we test the API surface and integration.
 """
 from __future__ import annotations
 
+import functools
+import hashlib
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api.main import app
+from app.api.routers import deox as deox_router
+from decision_log import logger as decision_logger
 
 
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest.fixture()
+def isolated_save_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[dict[str, Path]]:
+    """Redirect optimize/save persistence to tmp_path.
+
+    Patches two router-level constants and the ``log_decision`` symbol the
+    router imported:
+
+      * ``DEOX_METHODS_SNAPSHOTS_DIR`` → ``tmp_path/deox_methods_snapshots``
+      * ``log_decision`` → wrapper that forces ``db_path=tmp_path/decisions.db``
+
+    Yields a dict with ``snapshots_dir`` and ``db_path`` so the test body
+    can assert against the persisted artefacts directly.
+    """
+    snapshots_dir = tmp_path / "deox_methods_snapshots"
+    db_path = tmp_path / "decisions.db"
+
+    monkeypatch.setattr(deox_router, "DEOX_METHODS_SNAPSHOTS_DIR", snapshots_dir)
+    # ``functools.partial`` keeps the call signature intact — the router
+    # passes phase/decision/reasoning by kwargs but tags/context/etc. are
+    # also kwargs; partial pre-binds db_path without taking a positional slot.
+    real_log = decision_logger.log_decision
+    bound_log = functools.partial(real_log, db_path=db_path)
+    monkeypatch.setattr(deox_router, "log_decision", bound_log)
+
+    # Also patch PROJECT_ROOT so the relative-path computation inside the
+    # endpoint falls back gracefully when snapshot lands in tmp_path.
+    # We don't redirect PROJECT_ROOT itself — the endpoint handles
+    # ``relative_to`` failure with a try/except.
+
+    yield {"snapshots_dir": snapshots_dir, "db_path": db_path}
 
 
 def _baseline_forward_payload() -> dict[str, float | str]:
@@ -457,20 +498,131 @@ def test_post_optimize_invalid_thermo_model_400(client: TestClient) -> None:
     assert "not_a_real_model" in resp.json()["detail"]
 
 
-def test_post_optimize_save_returns_501(client: TestClient) -> None:
-    """PR 8 placeholder: optimize/save always 501 (NOT IMPLEMENTED)."""
-    resp = client.post(
-        "/api/deox/optimize/save",
-        json={
-            "recommendation": {"chosen_method_id": "asis_shot"},
-            "heat_id": "TEST-001",
-            "author": "user",
-        },
+def _save_payload_from_optimize() -> dict[str, float | str]:
+    """Build a /optimize/save body — full OptimizationRequest + audit fields.
+
+    PR 8 (Variant A): the save endpoint accepts the same inputs the
+    optimize endpoint did, plus ``heat_id`` and ``author``. Backend
+    re-executes to keep a single source of truth.
+    """
+    body = _baseline_optimize_payload()
+    body["heat_id"] = "TEST-HEAT-001"
+    body["author"] = "pytest"
+    return body
+
+
+def test_save_persists_to_decision_log(
+    client: TestClient, isolated_save_targets: dict[str, Path]
+) -> None:
+    """POST /optimize/save → 200 with a Decision Log row tagged correctly.
+
+    Verifies the full happy-path contract:
+      * status 200 (not 501).
+      * response carries ``decision_id`` + snapshot path + sha256.
+      * the SQLite row exists with phase=deoxidation and the
+        ``deox_method_recommendation`` tag.
+    """
+    resp = client.post("/api/deox/optimize/save", json=_save_payload_from_optimize())
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    for key in (
+        "decision_id",
+        "methods_snapshot_path",
+        "methods_snapshot_sha256",
+        "chosen_method_id",
+        "chosen_cost_eur",
+    ):
+        assert key in payload, f"missing key {key!r}"
+
+    assert isinstance(payload["decision_id"], int)
+    assert payload["decision_id"] > 0
+
+    # Confirm the row landed in the redirected SQLite file.
+    row = decision_logger.get_decision_by_id(
+        payload["decision_id"], db_path=isolated_save_targets["db_path"]
     )
-    assert resp.status_code == 501
-    detail = resp.json()["detail"]
-    # Russian, user-facing message per CLAUDE.md.
-    assert "PR 8" in detail
+    assert row is not None, "decision row not found in tmp db"
+    assert row["phase"] == "deoxidation"
+    assert "deox_method_recommendation" in row["tags"]
+    assert any(t.startswith("method:") for t in row["tags"]), (
+        f"expected method:<id> tag, got {row['tags']}"
+    )
+
+
+def test_save_creates_methods_snapshot(
+    client: TestClient, isolated_save_targets: dict[str, Path]
+) -> None:
+    """Snapshot YAML is written and byte-identical to the source catalog."""
+    resp = client.post("/api/deox/optimize/save", json=_save_payload_from_optimize())
+    assert resp.status_code == 200, resp.text
+
+    snapshots_dir = isolated_save_targets["snapshots_dir"]
+    assert snapshots_dir.exists(), "snapshots dir was not created"
+    files = list(snapshots_dir.glob("*.yaml"))
+    assert len(files) == 1, f"expected exactly 1 snapshot, got {len(files)}"
+
+    # Content equality with the source YAML.
+    source_yaml = deox_router.DEOX_METHODS_PATH
+    assert source_yaml.exists(), "source methods YAML missing — test fixture bug"
+    assert files[0].read_bytes() == source_yaml.read_bytes(), (
+        "snapshot content differs from source YAML"
+    )
+
+
+def test_save_snapshot_sha256_in_response(
+    client: TestClient, isolated_save_targets: dict[str, Path]
+) -> None:
+    """The SHA-256 hex in the response matches the on-disk file digest."""
+    resp = client.post("/api/deox/optimize/save", json=_save_payload_from_optimize())
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    snapshots_dir = isolated_save_targets["snapshots_dir"]
+    snap_file = next(snapshots_dir.glob("*.yaml"))
+    expected = hashlib.sha256(snap_file.read_bytes()).hexdigest()
+
+    assert payload["methods_snapshot_sha256"] == expected
+    assert len(payload["methods_snapshot_sha256"]) == 64  # SHA-256 hex
+
+
+def test_save_with_heat_id_in_context(
+    client: TestClient, isolated_save_targets: dict[str, Path]
+) -> None:
+    """``heat_id`` from the request body lands in the Decision Log context."""
+    body = _save_payload_from_optimize()
+    body["heat_id"] = "BLAST-FURNACE-9-HEAT-12345"
+
+    resp = client.post("/api/deox/optimize/save", json=body)
+    assert resp.status_code == 200, resp.text
+    decision_id = resp.json()["decision_id"]
+
+    row = decision_logger.get_decision_by_id(
+        decision_id, db_path=isolated_save_targets["db_path"]
+    )
+    assert row is not None
+    ctx = row["context"]
+    assert ctx.get("heat_id") == "BLAST-FURNACE-9-HEAT-12345"
+    # And the snapshot path + sha256 echoed in context match the response.
+    assert ctx.get("methods_snapshot_sha256") == resp.json()["methods_snapshot_sha256"]
+    assert ctx.get("methods_snapshot_path") == resp.json()["methods_snapshot_path"]
+
+
+def test_save_rejects_unknown_thermo_model_400(
+    client: TestClient, isolated_save_targets: dict[str, Path]
+) -> None:
+    """Same 400 contract as /optimize when ``thermo_model_id`` is unknown.
+
+    Bonus regression — ensures the validation chain stays in lock-step
+    with the optimize endpoint so the UI gets a consistent error shape.
+    """
+    body = _save_payload_from_optimize()
+    body["thermo_model_id"] = "not_a_real_model"
+    resp = client.post("/api/deox/optimize/save", json=body)
+    assert resp.status_code == 400
+    # No snapshot written when validation fails.
+    snapshots_dir = isolated_save_targets["snapshots_dir"]
+    assert not snapshots_dir.exists() or list(snapshots_dir.glob("*.yaml")) == []
 
 
 def test_optimize_returns_pattern_warnings_dx04(client: TestClient) -> None:
