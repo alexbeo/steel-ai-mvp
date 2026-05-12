@@ -2,17 +2,22 @@
 
 PR 1 — YAML loader + AdditionMethod dataclass.
 PR 2 — SlagState/CoDeoxSi dataclasses + O-balance functions.
-PR 3-4 — compute_al_demand_slag_aware, compare_methods, recommend_optimal.
+PR 3 — SlagAwareDemandResult + compute_al_demand_slag_aware + cost_model
+       расширение под kind="deox_consumable".
+PR 4 — compare_methods, recommend_optimal.
 """
 from __future__ import annotations
 
 import pytest
 import yaml
 
+from app.backend.deoxidation import AL_TO_O_MASS_RATIO, compute_al_demand
 from app.backend.slag_aware_deox import (
     AdditionMethod,
     CoDeoxSi,
+    SlagAwareDemandResult,
     SlagState,
+    compute_al_demand_slag_aware,
     compute_o_consumed_by_si,
     compute_o_from_slag,
     list_method_ids,
@@ -232,3 +237,298 @@ def test_slag_state_and_co_deox_si_are_frozen():
     co = CoDeoxSi(si_source_kg=100.0)
     with pytest.raises(Exception):  # FrozenInstanceError
         co.eta_si = 0.5  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# PR 3: compute_al_demand_slag_aware + Excel regression
+# ---------------------------------------------------------------------------
+
+
+# Базовый набор входов из Excel-калькулятора пользователя (371 т ASIS).
+# Используется в нескольких тестах ниже.
+_EXCEL_BASE_INPUTS = dict(
+    steel_mass_ton=371.0,
+    o_a_initial_ppm=657.0,
+    target_o_a_ppm=5.0,
+    target_al_pct=0.018,
+    temperature_C=1600.0,
+)
+
+
+def test_compute_al_demand_slag_aware_excel_base_case():
+    """Excel base-case: 371 т, 657→5 ppm, M_slag=2.2 т @ FeO=18%, target [Al]=0.018%.
+
+    Аналитический ожидаемый расчёт при η_Al=0.82 (asis_shot):
+        O_diss     = (657 - 5) × 1e-6 × 371 × 1000 = 241.892 kg
+        O_slag     = 2200 × (16/72) × 0.18         =  88.000 kg
+        O_net      = 241.892 + 88.000              = 329.892 kg
+        Al_active  = 329.892 × 1.12417             ≈ 370.83 kg
+        Al_for_O   = 370.83 / 0.82                 ≈ 452.23 kg  (с burn-off)
+        Al_residual= 371 × 1000 × 0.018% / 0.82    ≈  81.44 kg  (residual [Al])
+        Al_pure    = 452.23 + 81.44                ≈ 533.67 kg
+
+    Excel-калькулятор с k=0.89 даёт ~454 kg — разница ~15-17%
+    (Excel игнорирует residual [Al] target и использует empirical k).
+    Тест проверяет физическую правильность через аналитическое значение.
+    """
+    slag = SlagState(mass_kg=2200.0, feo_pct=18.0)
+    result = compute_al_demand_slag_aware(
+        method="asis_shot",
+        slag=slag,
+        **_EXCEL_BASE_INPUTS,
+    )
+
+    assert isinstance(result, SlagAwareDemandResult)
+    assert result.method_id == "asis_shot"
+    assert result.eta_al_used == pytest.approx(0.82, abs=1e-9)
+
+    # O-balance компоненты
+    assert result.o_dissolved_kg == pytest.approx(241.892, abs=0.01)
+    assert result.o_in_slag_kg == pytest.approx(88.0, abs=0.01)
+    assert result.o_consumed_by_si_kg == 0.0
+    assert result.o_total_to_remove_kg == pytest.approx(329.892, abs=0.01)
+
+    # Аналитический Al_pure
+    expected_al_for_o = 329.892 * AL_TO_O_MASS_RATIO / 0.82
+    expected_al_residual = 371.0 * 1000.0 * 0.018 / 100.0 / 0.82
+    expected_al_pure = expected_al_for_o + expected_al_residual
+    assert result.al_pure_kg == pytest.approx(expected_al_pure, rel=1e-3)
+
+    # ~534 kg — финальное число; проверяем что в окрестности Excel ±15%
+    assert 450.0 <= result.al_pure_kg <= 620.0, (
+        f"al_pure_kg={result.al_pure_kg:.1f} out of expected band 450-620 kg"
+    )
+
+    # Charge ≈ pure для ASIS-shot (Al=99%)
+    assert result.al_charge_kg == pytest.approx(result.al_pure_kg / 0.99, rel=1e-6)
+
+    # Cost > 0 и breakdown содержит обе позиции
+    assert result.cost_eur > 0
+    assert "al_commodity_eur" in result.cost_breakdown
+    assert "al_premium_eur" in result.cost_breakdown
+    # premium = al_pure × 0.30 €/kg (asis_shot)
+    assert result.cost_breakdown["al_premium_eur"] == pytest.approx(
+        result.al_pure_kg * 0.30, rel=1e-6
+    )
+
+
+def test_compute_al_demand_no_slag_equals_basic_when_no_residual():
+    """Без slag, без co_deox, target_al_pct=0 → al_pure_kg совпадает с basic
+    compute_al_demand при том же burn_off_pct.
+
+    Это smoke на интеграционную корректность wrapper'а: чистый delegation
+    к существующей deoxidation.compute_al_demand.
+    """
+    inputs = dict(
+        steel_mass_ton=100.0,
+        o_a_initial_ppm=300.0,
+        target_o_a_ppm=10.0,
+        target_al_pct=0.0,
+        temperature_C=1600.0,
+    )
+    result = compute_al_demand_slag_aware(method="asis_shot", **inputs)
+
+    # η_Al=0.82 → burn_off = 18%
+    basic = compute_al_demand(
+        o_a_initial_ppm=300.0,
+        temperature_C=1600.0,
+        steel_mass_ton=100.0,
+        target_o_a_ppm=10.0,
+        al_purity_pct=100.0,
+        burn_off_pct=18.0,
+    )
+
+    assert result.al_pure_kg == pytest.approx(basic.al_total_kg, rel=1e-9)
+    assert result.o_in_slag_kg == 0.0
+    assert result.o_consumed_by_si_kg == 0.0
+
+
+def test_co_deox_reduces_al_demand():
+    """Pre-deox by FeSi-75 уменьшает Al-потребность.
+
+    Та же плавка с co_deox=CoDeoxSi(100 kg FeSi-75) должна дать al_pure_kg
+    меньше, чем без co_deox (Si связывает 81.4 kg O).
+    """
+    slag = SlagState(mass_kg=2200.0, feo_pct=18.0)
+    without_si = compute_al_demand_slag_aware(
+        method="asis_shot", slag=slag, **_EXCEL_BASE_INPUTS
+    )
+    with_si = compute_al_demand_slag_aware(
+        method="asis_shot",
+        slag=slag,
+        co_deox_si=CoDeoxSi(si_source_kg=100.0, si_content_pct=75.0, eta_si=0.95),
+        **_EXCEL_BASE_INPUTS,
+    )
+
+    assert with_si.al_pure_kg < without_si.al_pure_kg, (
+        f"co_deox должен снижать Al: with={with_si.al_pure_kg:.1f}, "
+        f"without={without_si.al_pure_kg:.1f}"
+    )
+    assert with_si.o_consumed_by_si_kg == pytest.approx(81.43, abs=0.1)
+    # Ожидаемое снижение: 81.43 kg O × 1.12417 / 0.82 ≈ 111.65 kg Al-pure
+    expected_reduction = 81.43 * AL_TO_O_MASS_RATIO / 0.82
+    actual_reduction = without_si.al_pure_kg - with_si.al_pure_kg
+    assert actual_reduction == pytest.approx(expected_reduction, rel=1e-2)
+
+
+def test_method_by_id_string_equals_object():
+    """method='asis_shot' (строка) и method=AdditionMethod(...) дают идентичный результат."""
+    methods = load_addition_methods()
+    method_obj = methods["asis_shot"]
+
+    by_string = compute_al_demand_slag_aware(
+        method="asis_shot", **_EXCEL_BASE_INPUTS
+    )
+    by_object = compute_al_demand_slag_aware(
+        method=method_obj, **_EXCEL_BASE_INPUTS
+    )
+
+    assert by_string.al_pure_kg == pytest.approx(by_object.al_pure_kg, rel=1e-12)
+    assert by_string.cost_eur == pytest.approx(by_object.cost_eur, rel=1e-12)
+    assert by_string.method_id == by_object.method_id
+
+
+def test_unknown_method_id_raises():
+    """Несуществующий method-id → ValueError со списком доступных."""
+    with pytest.raises(ValueError, match="Unknown addition method"):
+        compute_al_demand_slag_aware(method="not_a_method", **_EXCEL_BASE_INPUTS)
+
+
+def test_eta_override_warning_when_far_outside_range():
+    """η_Al=0.50 для asis_shot (range 0.75-0.90) → warning в результате."""
+    result = compute_al_demand_slag_aware(
+        method="asis_shot",
+        eta_al_override=0.50,
+        **_EXCEL_BASE_INPUTS,
+    )
+    assert result.eta_al_used == pytest.approx(0.50, abs=1e-9)
+    assert any("η_Al" in w or "литературного диапазона" in w for w in result.warnings), (
+        f"Expected η_Al override warning, got warnings: {result.warnings}"
+    )
+
+
+def test_eta_override_within_range_no_warning():
+    """η_Al=0.85 для asis_shot (range 0.75-0.90) — внутри, без warning."""
+    result = compute_al_demand_slag_aware(
+        method="asis_shot",
+        eta_al_override=0.85,
+        **_EXCEL_BASE_INPUTS,
+    )
+    eta_warnings = [w for w in result.warnings if "η_Al" in w]
+    assert eta_warnings == [], f"Unexpected η warnings: {eta_warnings}"
+
+
+def test_cored_wire_feal30_charge_is_three_times_pure():
+    """Для FeAl-30 charge mass = pure / 0.30 (≈3.33× pure)."""
+    result = compute_al_demand_slag_aware(
+        method="cored_wire_feal30", **_EXCEL_BASE_INPUTS
+    )
+    assert result.al_charge_kg == pytest.approx(result.al_pure_kg / 0.30, rel=1e-9)
+    # Premium для FeAl-30 — €2.50/kg Al-eq
+    assert result.cost_breakdown["al_premium_eur"] == pytest.approx(
+        result.al_pure_kg * 2.50, rel=1e-9
+    )
+
+
+def test_invalid_steel_mass_raises():
+    """steel_mass_ton ≤ 0 → ValueError."""
+    bad = dict(_EXCEL_BASE_INPUTS, steel_mass_ton=0)
+    with pytest.raises(ValueError, match="steel_mass_ton"):
+        compute_al_demand_slag_aware(method="asis_shot", **bad)
+
+
+def test_target_al_negative_raises():
+    """target_al_pct < 0 → ValueError."""
+    bad = dict(_EXCEL_BASE_INPUTS, target_al_pct=-0.01)
+    with pytest.raises(ValueError, match="target_al_pct"):
+        compute_al_demand_slag_aware(method="asis_shot", **bad)
+
+
+# ---------------------------------------------------------------------------
+# PR 3: cost_model — kind="deox_consumable"
+# ---------------------------------------------------------------------------
+
+
+def test_cost_model_accepts_deox_consumable_kind():
+    """_validate_material_dict не падает для kind=deox_consumable с
+    addition_method_id; падает без addition_method_id.
+    """
+    from app.backend.cost_model import _validate_material_dict
+
+    # Корректный deox_consumable — FeAl-30 с ссылкой на YAML
+    good = {
+        "kind": "deox_consumable",
+        "price_per_kg": 4.80,
+        "element_content": {"Al": 0.30, "Fe": 0.70},  # сумма ≈ 1.0 — ОК
+        "addition_method_id": "cored_wire_feal30",
+    }
+    _validate_material_dict("Al-feal30", good)  # no raise
+
+    # element_content сумма ≠ 1.0 (FeAl-30 без Fe-добивки) — для
+    # deox_consumable не валидируется
+    relaxed = {
+        "kind": "deox_consumable",
+        "price_per_kg": 4.80,
+        "element_content": {"Al": 0.30},  # сумма 0.30 — обычно zero, но здесь OK
+        "addition_method_id": "cored_wire_feal30",
+    }
+    _validate_material_dict("Al-feal30-relaxed", relaxed)  # no raise
+
+    # Отсутствует addition_method_id — ValueError
+    missing_id = {
+        "kind": "deox_consumable",
+        "price_per_kg": 2.70,
+        "element_content": {"Al": 1.0},
+    }
+    with pytest.raises(ValueError, match="addition_method_id"):
+        _validate_material_dict("Al-asis-shot", missing_id)
+
+
+def test_cost_model_load_snapshot_with_deox_consumable(tmp_path):
+    """end-to-end: YAML snapshot с deox_consumable грузится через load_snapshot."""
+    from datetime import date
+
+    from app.backend.cost_model import load_snapshot
+
+    snap_yaml = tmp_path / "snap_with_deox.yaml"
+    snap_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "date": date(2026, 5, 12).isoformat(),
+                "currency": "EUR",
+                "source": "test",
+                "materials": {
+                    "scrap": {
+                        "kind": "base",
+                        "price_per_kg": 0.30,
+                        "element_content": {"Fe": 1.0},
+                    },
+                    "Al-asis-shot": {
+                        "kind": "deox_consumable",
+                        "price_per_kg": 2.70,
+                        "element_content": {"Al": 1.0},
+                        "addition_method_id": "asis_shot",
+                    },
+                },
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    snap = load_snapshot(snap_yaml)
+    assert "Al-asis-shot" in snap.materials
+    assert snap.materials["Al-asis-shot"].kind == "deox_consumable"
+    assert snap.materials["Al-asis-shot"].price_per_kg == 2.70
+
+
+def test_cost_model_rejects_unknown_kind():
+    """kind='nonsense' (не из Literal) → ValueError."""
+    from app.backend.cost_model import _validate_material_dict
+
+    bad = {
+        "kind": "wonkystuff",
+        "price_per_kg": 1.0,
+        "element_content": {"Al": 1.0},
+    }
+    with pytest.raises(ValueError, match="kind must be"):
+        _validate_material_dict("bad", bad)

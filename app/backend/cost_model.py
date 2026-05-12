@@ -25,7 +25,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-Kind = Literal["base", "ferroalloy", "pure"]
+Kind = Literal["base", "ferroalloy", "pure", "deox_consumable"]
 Currency = Literal["RUB", "USD", "EUR"]
 CostMode = Literal["full", "incremental"]
 
@@ -163,14 +163,27 @@ def _validate_material_dict(mid: str, md: dict) -> None:
         raise ValueError(f"{mid}: element_content is empty")
     if any(float(v) < 0 for v in ec.values()):
         raise ValueError(f"{mid}: element_content has negative values")
-    s = sum(float(v) for v in ec.values())
-    if abs(s - 1.0) > 0.02:
-        raise ValueError(
-            f"{mid}: element_content sum = {s:.3f}, must be ≈ 1.0 (±0.02)"
-        )
     kind = md.get("kind")
-    if kind not in ("base", "ferroalloy", "pure"):
-        raise ValueError(f"{mid}: kind must be base|ferroalloy|pure, got {kind}")
+    if kind not in ("base", "ferroalloy", "pure", "deox_consumable"):
+        raise ValueError(
+            f"{mid}: kind must be base|ferroalloy|pure|deox_consumable, got {kind}"
+        )
+    if kind == "deox_consumable":
+        # Deox consumable — это форма подачи Al (чушка / ASIS-shot / cored wire FeAl).
+        # element_content не обязан суммироваться в 1.0 (FeAl-30 имеет Al=0.30),
+        # но должен присутствовать addition_method_id со ссылкой на YAML-каталог
+        # (data/deox_methods/al_addition_methods.yaml).
+        if "addition_method_id" not in md:
+            raise ValueError(
+                f"{mid}: kind='deox_consumable' requires 'addition_method_id' "
+                f"(reference to data/deox_methods/al_addition_methods.yaml)"
+            )
+    else:
+        s = sum(float(v) for v in ec.values())
+        if abs(s - 1.0) > 0.02:
+            raise ValueError(
+                f"{mid}: element_content sum = {s:.3f}, must be ≈ 1.0 (±0.02)"
+            )
 
 
 def compute_cost(
