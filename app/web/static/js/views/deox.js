@@ -31,10 +31,11 @@ import {
 // ──────────────────── module state ────────────────────
 
 const SUBTABS = [
-  { id: 'forward', label: 'Сколько Al нужно' },
-  { id: 'inverse', label: 'Качество Al по факту' },
-  { id: 'compare', label: 'Сравнить модели' },
-  { id: 'ai',      label: 'AI советник + критик' },
+  { id: 'forward',  label: 'Сколько Al нужно' },
+  { id: 'inverse',  label: 'Качество Al по факту' },
+  { id: 'compare',  label: 'Сравнить модели' },
+  { id: 'ai',       label: 'AI советник + критик' },
+  { id: 'optimize', label: '🎯 Оптимизация метода' },
 ];
 
 const state = {
@@ -49,12 +50,14 @@ const state = {
     inverse: null,
     compare: null,
     ai: null,                // AI cycle form snapshot (PR 9)
+    optimize: null,          // PR 7 — slag-aware optimize form snapshot
   },
   results: {
     forward: null,
     inverse: null,
     compare: null,
     ai: null,                // last AI cycle result {advisor, critic, ...}
+    optimize: null,          // PR 7 — OptimizationResponse payload
   },
   busy: false,
   // PR 9 — AI cycle is long-running; track the in-flight job so the
@@ -63,6 +66,16 @@ const state = {
     running: false,
     pollAbort: null,
     currentJobId: null,
+  },
+  // PR 7 — Slag-aware optimization sub-tab. Methods catalog is lazy-loaded
+  // on first activation of the tab (GET /api/deox/methods). `save` tracks
+  // the in-flight POST /api/deox/optimize/save so the «Сохранить» button
+  // can show its own spinner without colliding with the main run flow.
+  optimize: {
+    methods: [],            // [{id, name, eta_al_typical, ...}]
+    defaultMethodId: null,
+    methodsLoaded: false,
+    saving: false,
   },
 };
 
@@ -137,6 +150,43 @@ function defaultAi() {
     heat_id: '',
     operator_notes: '',
     save_to_decision_log: false,
+  };
+}
+
+function defaultOptimize() {
+  // Excel base-case (см. spec §6 + test_api_deox._baseline_optimize_payload):
+  // 371-т BOF плавка, 657 ppm O_a после tap'а, target 8 ppm, residual
+  // [Al]=0.018 %, 2.2 т carry-over шлака с FeO=18 %, T=1600 °C.
+  // Эти дефолты позволяют пользователю нажать «Найти оптимальный метод»
+  // сразу после открытия таба и увидеть, что выбирается asis_shot.
+  return {
+    // Block A — heat
+    steel_mass_ton: 371,
+    o_a_initial_ppm: 657,
+    temperature_C: 1600,
+    target_o_a_ppm: 8,
+    target_al_pct: 0.018,
+    // Block B — slag carry-over (optional)
+    slag_no_data: false,
+    slag_mass_kg: 2200,
+    slag_feo_pct: 18,
+    slag_mno_pct: 0,
+    slag_sio2_pct: 0,
+    // Block C — co-deox FeSi (collapsed)
+    co_deox_enabled: false,
+    co_deox_fesi_kg: 0,
+    co_deox_fesi_si_content_pct: 75,
+    // Block D — methods (multi-select; null/empty = «все методы»)
+    method_ids: [],          // empty array → backend treats as "all"
+    user_override_eta_al_enabled: false,
+    user_override_eta_al: 0.80,
+    // Block E — constraints
+    target_n_ppm: null,
+    premium_cap_eur_per_kg: null,
+    t_drying_c: null,
+    // Block F — economics + thermo
+    thermo_model_id: null,    // resolved from selectedModelId at submit time
+    al_commodity_price_eur_per_kg: 2.40,
   };
 }
 
@@ -1034,6 +1084,690 @@ function renderAiResult() {
   );
 }
 
+// ──────────────────── Optimize sub-tab (PR 7) ────────────────────
+//
+// Пятый sub-tab «🎯 Оптимизация метода». Покрывает design-doc §8 — форма
+// блоков A-F (heat / slag / co-deox / methods / constraints / economics) +
+// recommendation card + pareto table + pattern warnings. POST на
+// /api/deox/optimize возвращает payload, описанный в test_api_deox.py
+// (chosen_method_id, pareto_table sorted ascending, etc.). Save кнопка
+// сейчас всегда даёт 501 — PR 8 закроет Decision Log.
+
+function buildOptionalField(key, label, value, opts = {}) {
+  // Похож на buildField, но позволяет пустое значение (data-optional=true) —
+  // readOptimizeForm дропает поле если raw=''. Используется для блока E
+  // (target_n_ppm, premium_cap, t_drying_c) и Block B компонентов %MnO/%SiO₂.
+  const { step = 1, min, max, decimals = 2, placeholder } = opts;
+  const id = `deox-opt-field-${key}`;
+  const inputAttrs = {
+    type: 'number',
+    class: 'deox-input mono',
+    id,
+    value: value == null || value === '' ? '' : String(Number(value).toFixed(decimals)),
+    step: String(step),
+    'data-field': key,
+    'data-optional': 'true',
+    ...(min != null ? { min: String(min) } : {}),
+    ...(max != null ? { max: String(max) } : {}),
+    ...(placeholder ? { placeholder } : {}),
+  };
+  const input = el('input', inputAttrs);
+  return el(
+    'div',
+    { class: 'deox-field' },
+    el('label', { class: 'deox-field-label', for: id }, label),
+    input,
+  );
+}
+
+function buildOptimizeField(key, label, value, opts = {}) {
+  // Те же поля что buildField, но с префиксом deox-opt-field-* чтобы не
+  // коллидировать с forward/inverse/compare формами (если кто-то будет
+  // querySelector'ить по id).
+  const { step = 1, min, max, decimals = 2 } = opts;
+  const id = `deox-opt-field-${key}`;
+  const input = el('input', {
+    type: 'number',
+    class: 'deox-input mono',
+    id,
+    value: String(Number(value).toFixed(decimals)),
+    step: String(step),
+    'data-field': key,
+    ...(min != null ? { min: String(min) } : {}),
+    ...(max != null ? { max: String(max) } : {}),
+  });
+  return el(
+    'div',
+    { class: 'deox-field' },
+    el('label', { class: 'deox-field-label', for: id }, label),
+    input,
+  );
+}
+
+async function loadOptimizeMethods() {
+  if (state.optimize.methodsLoaded) return;
+  try {
+    const resp = await apiFetch('/api/deox/methods');
+    state.optimize.methods = Array.isArray(resp.items) ? resp.items : [];
+    state.optimize.defaultMethodId = resp.default || null;
+    state.optimize.methodsLoaded = true;
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    showError(`Не удалось загрузить каталог методов подачи Al: ${detail}`);
+  }
+}
+
+function renderOptimizeForm() {
+  const v = state.formValues.optimize || defaultOptimize();
+  state.formValues.optimize = v;
+
+  // ── Block A — heat ────────────────────────────────────────────────
+  const blockA = el('div', { class: 'deox-form-heading' },
+    'Блок A — Плавка');
+  const gridA = el(
+    'div',
+    { class: 'deox-form-grid' },
+    buildOptimizeField('steel_mass_ton', 'Масса плавки, т', v.steel_mass_ton,
+      { step: 10, min: 1, max: 500, decimals: 0 }),
+    buildOptimizeField('o_a_initial_ppm', '[O]_init после tap, ppm', v.o_a_initial_ppm,
+      { step: 10, min: 10, max: 1500, decimals: 0 }),
+    buildOptimizeField('temperature_C', 'T стали, °C', v.temperature_C,
+      { step: 5, min: 1500, max: 1700, decimals: 0 }),
+    buildOptimizeField('target_o_a_ppm', 'Целевой O_a, ppm', v.target_o_a_ppm,
+      { step: 1, min: 1, max: 50, decimals: 1 }),
+    buildOptimizeField('target_al_pct', 'Целевой [Al], %', v.target_al_pct,
+      { step: 0.001, min: 0.005, max: 0.1, decimals: 3 }),
+  );
+
+  // ── Block B — slag carry-over ─────────────────────────────────────
+  const slagToggle = el('label', { class: 'deox-ai-save-toggle' },
+    el('input', {
+      type: 'checkbox',
+      'data-field': 'slag_no_data',
+      ...(v.slag_no_data ? { checked: 'checked' } : {}),
+      onChange: (ev) => {
+        v.slag_no_data = !!ev.target.checked;
+        // Re-render to enable/disable Block B fields.
+        renderOptimizeForm();
+      },
+    }),
+    el('span', {}, 'Нет данных по шлаку → basic forward (отключить slag-aware)'),
+  );
+  const slagDisabled = !!v.slag_no_data;
+  const slagAttr = slagDisabled ? { disabled: 'disabled' } : {};
+  const gridB = el(
+    'div',
+    { class: 'deox-form-grid', 'data-block': 'slag', ...slagAttr },
+    buildOptionalField('slag_mass_kg', 'M_slag, кг', v.slag_mass_kg,
+      { step: 100, min: 0, max: 10000, decimals: 0,
+        placeholder: 'например, 2200' }),
+    buildOptionalField('slag_feo_pct', '%FeO в шлаке', v.slag_feo_pct,
+      { step: 1, min: 0, max: 50, decimals: 1,
+        placeholder: 'например, 18' }),
+    buildOptionalField('slag_mno_pct', '%MnO (опц.)', v.slag_mno_pct,
+      { step: 0.5, min: 0, max: 20, decimals: 1 }),
+    buildOptionalField('slag_sio2_pct', '%SiO₂ (опц.)', v.slag_sio2_pct,
+      { step: 0.5, min: 0, max: 30, decimals: 1 }),
+  );
+  if (slagDisabled) {
+    // Visually grey-out block B when "нет данных" is checked. Inputs stay
+    // in DOM so readOptimizeForm can decide to drop them based on the flag.
+    for (const inp of gridB.querySelectorAll('input')) {
+      inp.disabled = true;
+    }
+    gridB.style.opacity = '0.5';
+  }
+  const blockB = el('div', { class: 'deox-form-heading' },
+    'Блок B — Шлак переноса (BOF→LF carry-over)');
+  const blockBNote = el('div', { class: 'deox-ai-subnote' },
+    'Шлак с FeO=15-20 % после BOF-tap может содержать в 5-10× больше O, ' +
+    'чем растворённый O в стали. Slag-aware расчёт учитывает это в O-балансе.');
+
+  // ── Block C — Co-deoxidation (collapsed by toggle) ────────────────
+  const coToggle = el('label', { class: 'deox-ai-save-toggle' },
+    el('input', {
+      type: 'checkbox',
+      'data-field': 'co_deox_enabled',
+      ...(v.co_deox_enabled ? { checked: 'checked' } : {}),
+      onChange: (ev) => {
+        v.co_deox_enabled = !!ev.target.checked;
+        renderOptimizeForm();
+      },
+    }),
+    el('span', {}, 'Введены FeSi / SiMn до Al? (Si pre-deox)'),
+  );
+  const blockC = el('div', { class: 'deox-form-heading' },
+    'Блок C — Co-deoxidation (опционально)');
+  const coDeoxFields = v.co_deox_enabled
+    ? el(
+        'div',
+        { class: 'deox-form-grid' },
+        buildOptionalField('co_deox_fesi_kg', 'm_FeSi подано, кг',
+          v.co_deox_fesi_kg, { step: 10, min: 0, max: 5000, decimals: 0 }),
+        buildOptionalField('co_deox_fesi_si_content_pct', '%Si в FeSi',
+          v.co_deox_fesi_si_content_pct,
+          { step: 1, min: 0.1, max: 100, decimals: 1 }),
+      )
+    : null;
+
+  // ── Block D — Methods + override η_Al ─────────────────────────────
+  const blockD = el('div', { class: 'deox-form-heading' },
+    'Блок D — Методы подачи Al');
+  const methodsItems = Array.isArray(state.optimize.methods)
+    ? state.optimize.methods : [];
+  const selectedMethodIds = new Set(v.method_ids || []);
+  const methodCheckboxes = methodsItems.length === 0
+    ? el('div', { class: 'deox-ai-subnote' },
+        'Каталог методов загружается… (GET /api/deox/methods)')
+    : el(
+        'div',
+        { class: 'deox-form-grid' },
+        ...methodsItems.map((m) => {
+          // Default: all selected (empty Set = all). After user toggles
+          // any checkbox, the Set tracks the explicit selection.
+          const isChecked = selectedMethodIds.size === 0
+            ? true
+            : selectedMethodIds.has(m.id);
+          return el(
+            'label',
+            {
+              class: 'deox-ai-save-toggle',
+              style: { gridColumn: 'span 1' },
+              title: m.notes || '',
+            },
+            el('input', {
+              type: 'checkbox',
+              'data-field': `method:${m.id}`,
+              ...(isChecked ? { checked: 'checked' } : {}),
+            }),
+            el('span', {},
+              `${m.name} (η≈${formatNumber(m.eta_al_typical, 2)})`,
+              m.premium_eur_per_kg
+                ? el('span', { class: 'predict-result-pm' },
+                    ` +€${formatNumber(m.premium_eur_per_kg, 2)}/kg`)
+                : null,
+              m.carrier_gas
+                ? el('span', { class: 'predict-result-pm' },
+                    ` [${m.carrier_gas}]`)
+                : null,
+            ),
+          );
+        }),
+      );
+
+  const overrideToggle = el('label', { class: 'deox-ai-save-toggle' },
+    el('input', {
+      type: 'checkbox',
+      'data-field': 'user_override_eta_al_enabled',
+      ...(v.user_override_eta_al_enabled ? { checked: 'checked' } : {}),
+      onChange: (ev) => {
+        v.user_override_eta_al_enabled = !!ev.target.checked;
+        renderOptimizeForm();
+      },
+    }),
+    el('span', {}, 'Override η_Al вручную (например, из исторических плавок)'),
+  );
+  const overrideField = v.user_override_eta_al_enabled
+    ? el(
+        'div',
+        { class: 'deox-form-grid' },
+        buildOptionalField('user_override_eta_al', 'η_Al override (0.1-1.0)',
+          v.user_override_eta_al,
+          { step: 0.01, min: 0.1, max: 1.0, decimals: 2 }),
+      )
+    : null;
+
+  // ── Block E — Constraints ─────────────────────────────────────────
+  const blockE = el('div', { class: 'deox-form-heading' },
+    'Блок E — Ограничения (опционально)');
+  const gridE = el(
+    'div',
+    { class: 'deox-form-grid' },
+    buildOptionalField('target_n_ppm', 'Целевой [N], ppm (для DX07)',
+      v.target_n_ppm,
+      { step: 5, min: 0, max: 500, decimals: 0,
+        placeholder: 'например, 30 → исключить N₂-carrier' }),
+    buildOptionalField('premium_cap_eur_per_kg', 'Premium cap, €/kg',
+      v.premium_cap_eur_per_kg,
+      { step: 0.10, min: 0, max: 20, decimals: 2,
+        placeholder: 'например, 0.50' }),
+    buildOptionalField('t_drying_c', 'T сушки гранул, °C (для DX05)',
+      v.t_drying_c,
+      { step: 10, min: 0, max: 600, decimals: 0,
+        placeholder: 'если applicable' }),
+  );
+
+  // ── Block F — Economics + thermo ──────────────────────────────────
+  const blockF = el('div', { class: 'deox-form-heading' },
+    'Блок F — Экономика и термодинамика');
+  const thermoSelectId = 'deox-opt-thermo';
+  const thermoSelect = el('select', {
+    class: 'deox-select',
+    id: thermoSelectId,
+    'data-field': 'thermo_model_id',
+  });
+  const selectedThermo = v.thermo_model_id
+    || state.selectedModelId
+    || state.defaultModelId;
+  for (const m of state.thermoModels) {
+    const opt = el('option', { value: m.id },
+      `${m.name} — ${m.citation || ''}`);
+    if (m.id === selectedThermo) opt.selected = true;
+    thermoSelect.append(opt);
+  }
+  const thermoField = el(
+    'div',
+    { class: 'deox-field' },
+    el('label', { class: 'deox-field-label', for: thermoSelectId },
+      'Термодинамическая модель'),
+    thermoSelect,
+  );
+  const gridF = el(
+    'div',
+    { class: 'deox-form-grid' },
+    thermoField,
+    buildOptimizeField('al_commodity_price_eur_per_kg',
+      'Цена Al commodity, €/kg', v.al_commodity_price_eur_per_kg,
+      { step: 0.10, min: 0, max: 20, decimals: 2 }),
+  );
+
+  // ── Action button ─────────────────────────────────────────────────
+  const submitBtn = el('button', {
+    class: 'btn primary',
+    type: 'button',
+    onClick: () => runOptimize(),
+    ...(state.busy ? { disabled: 'disabled' } : {}),
+  }, '🎯 Найти оптимальный метод');
+  const actions = el('div', { class: 'deox-actions' }, submitBtn);
+
+  const subnote = el('div', { class: 'deox-ai-subnote' },
+    'Optimizer пробегает по всем выбранным методам, считает Al / cost / scatter ' +
+    'через slag-aware O-баланс, фильтрует по constraints (carrier gas / premium cap) ' +
+    'и возвращает Pareto-таблицу с минимальным cost-per-heat. ' +
+    'Pattern Library проверяет DX04 (полноту slag), DX05 (T сушки гранул), ' +
+    'DX06 (override η вне диапазона), DX07 (N₂-carrier для low-N).');
+
+  elements.formContainer.replaceChildren(
+    blockA, gridA,
+    blockB, blockBNote, slagToggle, gridB,
+    blockC, coToggle, ...(coDeoxFields ? [coDeoxFields] : []),
+    blockD, methodCheckboxes, overrideToggle,
+    ...(overrideField ? [overrideField] : []),
+    blockE, gridE,
+    blockF, gridF,
+    actions, subnote,
+  );
+}
+
+function readOptimizeForm(formRoot) {
+  // Build OptimizationRequest body. Optional fields are dropped when empty
+  // so the backend reads them as None / default. Slag block is suppressed
+  // when slag_no_data checkbox is checked.
+  const out = {};
+  const v = state.formValues.optimize || defaultOptimize();
+
+  // Required Block A fields — always read.
+  const requiredKeys = [
+    'steel_mass_ton',
+    'o_a_initial_ppm',
+    'temperature_C',
+    'target_o_a_ppm',
+    'target_al_pct',
+  ];
+  for (const key of requiredKeys) {
+    const inp = formRoot.querySelector(`input[data-field="${key}"]`);
+    if (!inp) {
+      throw new Error(`Поле «${key}» не найдено`);
+    }
+    const val = parseFloat(inp.value);
+    if (Number.isNaN(val)) {
+      throw new Error(`Поле «${key}» содержит некорректное значение`);
+    }
+    out[key] = val;
+  }
+
+  // Slag block — only included when slag_no_data is unchecked.
+  const slagToggleInp = formRoot.querySelector('input[data-field="slag_no_data"]');
+  const slagNoData = !!(slagToggleInp && slagToggleInp.checked);
+  if (!slagNoData) {
+    for (const key of ['slag_mass_kg', 'slag_feo_pct',
+      'slag_mno_pct', 'slag_sio2_pct']) {
+      const inp = formRoot.querySelector(`input[data-field="${key}"]`);
+      if (!inp) continue;
+      const raw = (inp.value || '').trim();
+      if (raw === '') continue;
+      const val = parseFloat(raw);
+      if (Number.isNaN(val)) {
+        throw new Error(`Поле «${key}» содержит некорректное значение`);
+      }
+      out[key] = val;
+    }
+  }
+
+  // Block C — co-deox.
+  const coEnabledInp = formRoot.querySelector(
+    'input[data-field="co_deox_enabled"]');
+  const coEnabled = !!(coEnabledInp && coEnabledInp.checked);
+  if (coEnabled) {
+    const kgInp = formRoot.querySelector('input[data-field="co_deox_fesi_kg"]');
+    const siInp = formRoot.querySelector(
+      'input[data-field="co_deox_fesi_si_content_pct"]');
+    if (kgInp && kgInp.value && kgInp.value.trim() !== '') {
+      const kg = parseFloat(kgInp.value);
+      if (!Number.isNaN(kg) && kg > 0) {
+        out.co_deox_fesi_kg = kg;
+      }
+    }
+    if (siInp && siInp.value && siInp.value.trim() !== '') {
+      const si = parseFloat(siInp.value);
+      if (!Number.isNaN(si)) {
+        out.co_deox_fesi_si_content_pct = si;
+      }
+    }
+  }
+
+  // Block D — method_ids multi-select. If user kept the default (all
+  // checked) we send `null` so backend iterates the full catalog. If some
+  // checkboxes are unchecked, send the explicit subset.
+  const methodInputs = formRoot.querySelectorAll(
+    'input[data-field^="method:"]');
+  const totalMethods = methodInputs.length;
+  const checkedIds = [];
+  for (const inp of methodInputs) {
+    if (inp.checked) {
+      const id = inp.dataset.field.slice('method:'.length);
+      checkedIds.push(id);
+    }
+  }
+  if (totalMethods > 0 && checkedIds.length < totalMethods) {
+    if (checkedIds.length === 0) {
+      throw new Error('Выберите хотя бы один метод подачи Al');
+    }
+    out.method_ids = checkedIds;
+  } else {
+    // All selected (or catalog empty) → omit method_ids → backend uses all.
+    // We cache the explicit list in form values for next render's reuse.
+  }
+  v.method_ids = totalMethods > 0 && checkedIds.length < totalMethods
+    ? checkedIds : [];
+
+  // Override η_Al.
+  const overrideToggleInp = formRoot.querySelector(
+    'input[data-field="user_override_eta_al_enabled"]');
+  if (overrideToggleInp && overrideToggleInp.checked) {
+    const inp = formRoot.querySelector(
+      'input[data-field="user_override_eta_al"]');
+    if (inp && inp.value && inp.value.trim() !== '') {
+      const val = parseFloat(inp.value);
+      if (!Number.isNaN(val)) {
+        out.user_override_eta_al = val;
+      }
+    }
+  }
+
+  // Block E — constraints (all optional).
+  for (const key of ['target_n_ppm', 'premium_cap_eur_per_kg', 't_drying_c']) {
+    const inp = formRoot.querySelector(`input[data-field="${key}"]`);
+    if (!inp) continue;
+    const raw = (inp.value || '').trim();
+    if (raw === '') continue;
+    const val = parseFloat(raw);
+    if (!Number.isNaN(val)) {
+      out[key] = val;
+    }
+  }
+
+  // Block F — thermo + economics.
+  const thermoSelect = formRoot.querySelector(
+    'select[data-field="thermo_model_id"]');
+  if (thermoSelect && thermoSelect.value) {
+    out.thermo_model_id = thermoSelect.value;
+  } else if (state.selectedModelId || state.defaultModelId) {
+    out.thermo_model_id = state.selectedModelId || state.defaultModelId;
+  }
+  const priceInp = formRoot.querySelector(
+    'input[data-field="al_commodity_price_eur_per_kg"]');
+  if (priceInp && priceInp.value && priceInp.value.trim() !== '') {
+    const val = parseFloat(priceInp.value);
+    if (!Number.isNaN(val)) {
+      out.al_commodity_price_eur_per_kg = val;
+    }
+  }
+
+  // Cache the parsed snapshot back into form values for re-render fidelity.
+  // Use Block A keys + optional ones that we successfully parsed; the
+  // toggle flags are preserved on the v object via the onChange handlers.
+  state.formValues.optimize = {
+    ...v,
+    steel_mass_ton: out.steel_mass_ton,
+    o_a_initial_ppm: out.o_a_initial_ppm,
+    temperature_C: out.temperature_C,
+    target_o_a_ppm: out.target_o_a_ppm,
+    target_al_pct: out.target_al_pct,
+    slag_no_data: slagNoData,
+    slag_mass_kg: out.slag_mass_kg ?? v.slag_mass_kg,
+    slag_feo_pct: out.slag_feo_pct ?? v.slag_feo_pct,
+    slag_mno_pct: out.slag_mno_pct ?? v.slag_mno_pct,
+    slag_sio2_pct: out.slag_sio2_pct ?? v.slag_sio2_pct,
+    co_deox_enabled: coEnabled,
+    co_deox_fesi_kg: out.co_deox_fesi_kg ?? v.co_deox_fesi_kg,
+    co_deox_fesi_si_content_pct:
+      out.co_deox_fesi_si_content_pct ?? v.co_deox_fesi_si_content_pct,
+    user_override_eta_al_enabled: !!(
+      overrideToggleInp && overrideToggleInp.checked),
+    user_override_eta_al:
+      out.user_override_eta_al ?? v.user_override_eta_al,
+    target_n_ppm: out.target_n_ppm ?? null,
+    premium_cap_eur_per_kg: out.premium_cap_eur_per_kg ?? null,
+    t_drying_c: out.t_drying_c ?? null,
+    thermo_model_id: out.thermo_model_id || null,
+    al_commodity_price_eur_per_kg:
+      out.al_commodity_price_eur_per_kg
+      ?? v.al_commodity_price_eur_per_kg,
+  };
+
+  return out;
+}
+
+function renderOptimizeResult() {
+  const data = state.results.optimize;
+  if (!data) {
+    elements.resultContainer.replaceChildren();
+    return;
+  }
+
+  const blocks = [];
+
+  // ── Recommendation card ───────────────────────────────────────────
+  const chosenName = data.chosen_method_name || data.chosen_method_id || '—';
+  const chosenCost = data.chosen_cost_eur;
+  const inputs = data.inputs || {};
+  const steelMass = Number(inputs.steel_mass_ton || 0);
+  const costPerTon = steelMass > 0
+    ? chosenCost / steelMass : null;
+
+  const headline = el(
+    'div',
+    { class: 'deox-result-headline' },
+    el('div', { class: 'deox-result-label' }, 'Рекомендованный метод'),
+    el(
+      'div',
+      { class: 'deox-result-mean mono' },
+      chosenName,
+    ),
+    el('div', { class: 'deox-result-sub' },
+      `Cost: ${formatNumber(chosenCost, 2)} €/heat`
+      + (costPerTon != null
+        ? ` (${formatNumber(costPerTon, 3)} €/т стали)` : '')
+      + (data.thermo_model_used
+        ? ` · thermo: ${data.thermo_model_used}` : '')),
+  );
+  blocks.push(headline);
+
+  if (data.rationale) {
+    blocks.push(el('div', { class: 'deox-ai-block' },
+      el('strong', {}, 'Обоснование. '), data.rationale));
+  }
+
+  // Runner-up summary.
+  if (data.runner_up_method_id) {
+    const runnerUp = (data.pareto_table || [])
+      .find((r) => r.method_id === data.runner_up_method_id);
+    const runnerName = runnerUp
+      ? runnerUp.method_name : data.runner_up_method_id;
+    const delta = data.runner_up_delta_eur;
+    blocks.push(el('div', { class: 'deox-ai-block' },
+      el('strong', {}, 'Runner-up: '),
+      `${runnerName}`,
+      delta != null
+        ? ` (+€${formatNumber(delta, 2)} к выбранному)`
+        : '',
+    ));
+  }
+
+  // Constraints active (bullet list).
+  if (Array.isArray(data.constraints_active)
+      && data.constraints_active.length > 0) {
+    blocks.push(el('div', { class: 'deox-ai-block' },
+      el('strong', {}, 'Активные ограничения:'),
+      el('ul', { class: 'deox-ai-list' },
+        ...data.constraints_active.map((c) => el('li', {}, c)),
+      ),
+    ));
+  }
+
+  // Rejected methods (id + reason).
+  if (Array.isArray(data.rejected_methods)
+      && data.rejected_methods.length > 0) {
+    blocks.push(el('div', { class: 'deox-ai-block' },
+      el('strong', {}, 'Исключённые методы:'),
+      el('ul', { class: 'deox-ai-list' },
+        ...data.rejected_methods.map((rej) => el('li', {},
+          el('strong', {}, `${rej.method_id}: `),
+          rej.reason || '—',
+        )),
+      ),
+    ));
+  }
+
+  // ── Pareto table ──────────────────────────────────────────────────
+  const pareto = Array.isArray(data.pareto_table) ? data.pareto_table : [];
+  if (pareto.length > 0) {
+    const head = el('thead', {},
+      el('tr', {},
+        el('th', {}, 'Метод'),
+        el('th', {}, 'η_Al'),
+        el('th', {}, 'Al pure, кг'),
+        el('th', {}, 'Al charge, кг'),
+        el('th', {}, '€/heat'),
+        el('th', {}, '€/т'),
+        el('th', {}, 'kg Al/т'),
+        el('th', {}, '± scatter'),
+        el('th', {}, 'Carrier'),
+        el('th', {}, 'Warnings'),
+      ),
+    );
+    const tbody = el('tbody', {},
+      ...pareto.map((row) => {
+        const isChosen = row.method_id === data.chosen_method_id;
+        const trClass = isChosen ? 'is-min' : '';
+        const warns = Array.isArray(row.warnings) ? row.warnings : [];
+        return el('tr', {},
+          el('td', { class: `deox-compare-name ${trClass}` },
+            isChosen ? `★ ${row.method_name}` : row.method_name),
+          el('td', {}, formatNumber(row.eta_al_used, 2)),
+          el('td', {}, formatNumber(row.al_pure_kg, 1)),
+          el('td', {}, formatNumber(row.al_charge_kg, 1)),
+          el('td', { class: isChosen ? 'is-min' : '' },
+            formatNumber(row.cost_per_heat_eur, 2)),
+          el('td', {}, formatNumber(row.cost_per_ton_eur, 3)),
+          el('td', {}, formatNumber(row.al_specific_kg_per_t, 3)),
+          el('td', {}, `±${formatNumber(row.scatter_kg, 1)}`),
+          el('td', {}, row.carrier_gas || '—'),
+          el('td', {}, warns.length > 0 ? warns.join('; ') : '—'),
+        );
+      }),
+    );
+    blocks.push(el('div', { class: 'deox-ai-block' },
+      el('strong', {}, 'Pareto-таблица (отсортирована по €/heat ↑):'),
+      el('table', { class: 'deox-compare-table' }, head, tbody),
+    ));
+  }
+
+  // ── Pattern warnings (re-use existing renderer) ───────────────────
+  const wBlock = renderWarnings(data.pattern_warnings);
+  if (wBlock) blocks.push(wBlock);
+
+  // ── Save button (POST /api/deox/optimize/save → 501 in PR 7) ──────
+  const saveBtn = el('button', {
+    class: 'btn',
+    type: 'button',
+    onClick: () => runOptimizeSave(),
+    ...(state.optimize.saving ? { disabled: 'disabled' } : {}),
+  }, state.optimize.saving
+    ? 'Сохранение…'
+    : '💾 Сохранить рекомендацию');
+  blocks.push(el('div', { class: 'deox-actions' }, saveBtn));
+
+  elements.resultContainer.replaceChildren(
+    el('div', { class: 'deox-result' }, ...blocks),
+  );
+}
+
+async function runOptimize() {
+  if (state.busy) return;
+  let body;
+  try {
+    body = readOptimizeForm(elements.formContainer);
+  } catch (err) {
+    showError(err.message);
+    return;
+  }
+  await dispatchPost(
+    '/api/deox/optimize', body, 'optimize', renderOptimizeResult,
+  );
+}
+
+async function runOptimizeSave() {
+  const data = state.results.optimize;
+  if (!data) {
+    showError('Сначала запустите оптимизацию — нечего сохранять.');
+    return;
+  }
+  if (state.optimize.saving) return;
+  state.optimize.saving = true;
+  clearError();
+  // Re-render so the save button shows the spinner state.
+  renderOptimizeResult();
+
+  try {
+    await apiFetch('/api/deox/optimize/save', {
+      method: 'POST',
+      body: {
+        recommendation: data,
+        heat_id: null,
+        author: 'user',
+      },
+    });
+    // Unreachable in PR 7 — backend always 501. Kept for PR 8 forward-compat.
+    showError('Рекомендация сохранена в Decision Log.');
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 501) {
+      // Expected in PR 7 — surface as a friendly info banner, not as error.
+      showError(
+        err.message
+          || 'Сохранение Decision Log будет реализовано в PR 8.',
+      );
+    } else {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      showError(`Ошибка сохранения: ${detail}`);
+    }
+  } finally {
+    state.optimize.saving = false;
+    renderOptimizeResult();
+  }
+}
+
 // ──────────────────── actions ────────────────────
 
 async function runForward() {
@@ -1222,6 +1956,15 @@ function setSubtab(id) {
       } catch {
         // Half-typed — keep the cached form values intact.
       }
+    } else if (prevTab === 'optimize') {
+      try {
+        // readOptimizeForm caches state.formValues.optimize itself as a
+        // side effect — call inside try so a half-typed numeric field
+        // doesn't wipe the whole form snapshot.
+        readOptimizeForm(elements.formContainer);
+      } catch {
+        // ignore — toggles are already preserved via their onChange handlers.
+      }
     } else {
       const schemaFn = prevTab === 'forward'
         ? defaultForward
@@ -1250,11 +1993,26 @@ function setSubtab(id) {
   else if (id === 'inverse') renderInverseForm();
   else if (id === 'compare') renderCompareForm();
   else if (id === 'ai') renderAiForm();
+  else if (id === 'optimize') {
+    // Lazy-load /api/deox/methods on first activation, then re-render the
+    // form so the multi-select picks up the catalog. Catalog fetch errors
+    // surface via showError; the form still renders (catalog list shows
+    // «Каталог загружается…» fallback text).
+    if (!state.optimize.methodsLoaded) {
+      renderOptimizeForm();   // initial render with empty catalog placeholder
+      loadOptimizeMethods().then(() => {
+        if (state.subtab === 'optimize') renderOptimizeForm();
+      });
+    } else {
+      renderOptimizeForm();
+    }
+  }
   // Restore last result for that tab (or clear).
   if (id === 'forward') renderForwardResult();
   else if (id === 'inverse') renderInverseResult();
   else if (id === 'compare') renderCompareResult();
   else if (id === 'ai') renderAiResult();
+  else if (id === 'optimize') renderOptimizeResult();
 }
 
 function onModelChange(modelId) {
@@ -1325,6 +2083,16 @@ async function loadAll() {
     else if (state.subtab === 'inverse') renderInverseForm();
     else if (state.subtab === 'compare') renderCompareForm();
     else if (state.subtab === 'ai') renderAiForm();
+    else if (state.subtab === 'optimize') {
+      if (!state.optimize.methodsLoaded) {
+        renderOptimizeForm();
+        loadOptimizeMethods().then(() => {
+          if (state.subtab === 'optimize') renderOptimizeForm();
+        });
+      } else {
+        renderOptimizeForm();
+      }
+    }
   } catch (err) {
     const detail = err instanceof ApiError ? err.message : String(err);
     showError(`Не удалось загрузить состояние: ${detail}`);
@@ -1340,10 +2108,17 @@ export function init(container) {
   state.targetOaDefault = 5.0;
   state.selectedModelId = null;
   state.subtab = 'forward';
-  state.formValues = { forward: null, inverse: null, compare: null, ai: null };
-  state.results = { forward: null, inverse: null, compare: null, ai: null };
+  state.formValues = {
+    forward: null, inverse: null, compare: null, ai: null, optimize: null,
+  };
+  state.results = {
+    forward: null, inverse: null, compare: null, ai: null, optimize: null,
+  };
   state.busy = false;
   state.aiJob = { running: false, pollAbort: null, currentJobId: null };
+  state.optimize = {
+    methods: [], defaultMethodId: null, methodsLoaded: false, saving: false,
+  };
 
   const skeleton = buildSkeleton();
   elements = skeleton;
