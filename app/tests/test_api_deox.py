@@ -299,3 +299,199 @@ def test_safe_json_numeric(client: TestClient) -> None:
     cmp_resp = client.post("/api/deox/compare", json=_baseline_forward_payload())
     assert cmp_resp.status_code == 200
     assert isinstance(cmp_resp.json()["spread_pct"], (int, float))
+
+
+# ───────── PR 6 — Slag-aware optimization endpoints ───────────────────
+
+
+def _baseline_optimize_payload() -> dict[str, float | str]:
+    """Excel base-case used throughout the slag-aware design doc.
+
+    371-t BOF heat, 657 ppm O_a tap, target 8 ppm, residual [Al]=0.018%,
+    2.2 t slag carry-over @ FeO=18%, T=1600 °C. Matches the
+    ``__main__`` dry-run in ``slag_aware_deox.py`` and the regression
+    case in ``test_slag_aware_deox.py``.
+    """
+    return {
+        "steel_mass_ton": 371.0,
+        "o_a_initial_ppm": 657.0,
+        "target_o_a_ppm": 8.0,
+        "target_al_pct": 0.018,
+        "slag_mass_kg": 2200.0,
+        "slag_feo_pct": 18.0,
+        "temperature_C": 1600.0,
+    }
+
+
+def test_get_methods_returns_catalog(client: TestClient) -> None:
+    """GET /api/deox/methods exposes the YAML catalog for the UI dropdown.
+
+    Contract:
+      * ``count`` ≥ 5 (the seed YAML ships 5 methods: ingot,
+        submerged_ingot, granule_water_quenched, asis_shot, cored_wire_feal30).
+      * Each item carries ``id`` + flattened canonical fields +
+        ``extras`` (raw YAML row).
+      * ``default`` points at an existing method id.
+    """
+    resp = client.get("/api/deox/methods")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    assert payload["count"] >= 5
+    assert len(payload["items"]) == payload["count"]
+
+    ids = {item["id"] for item in payload["items"]}
+    assert payload["default"] in ids, "default must be an existing method id"
+    # Spot-check the marquee methods land in the catalog.
+    assert "asis_shot" in ids
+    assert "ingot" in ids
+
+    # Per-item shape sanity.
+    asis = next(it for it in payload["items"] if it["id"] == "asis_shot")
+    for key in (
+        "name",
+        "eta_al_typical",
+        "eta_al_range",
+        "premium_eur_per_kg",
+        "surface_m2_per_kg",
+        "carrier_gas",
+        "notes",
+        "extras",
+    ):
+        assert key in asis, f"asis_shot missing key {key!r}"
+    assert isinstance(asis["eta_al_range"], list) and len(asis["eta_al_range"]) == 2
+    assert isinstance(asis["extras"], dict)
+
+
+def test_post_optimize_excel_base_case(client: TestClient) -> None:
+    """POST /api/deox/optimize on the Excel base case picks a sane winner.
+
+    With no [N] / premium constraints, ``recommend_optimal_method`` ranks
+    methods by ``cost_per_heat_eur`` ascending. ASIS-shot has high η_Al
+    (0.82) and modest premium (€0.30/kg Al-eq) → it should lead or
+    runner-up; either way the chosen method must come from the catalog
+    and the pareto_table must be sorted ascending.
+    """
+    resp = client.post("/api/deox/optimize", json=_baseline_optimize_payload())
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    # Top-level keys per the spec response shape.
+    for key in (
+        "chosen_method_id",
+        "chosen_method_name",
+        "chosen_cost_eur",
+        "rationale",
+        "constraints_active",
+        "rejected_methods",
+        "pareto_table",
+        "pattern_warnings",
+        "thermo_model_used",
+        "inputs",
+    ):
+        assert key in payload, f"missing key {key!r}"
+
+    # Pareto sorted ascending by cost_per_heat_eur.
+    costs = [row["cost_per_heat_eur"] for row in payload["pareto_table"]]
+    assert costs == sorted(costs), "pareto_table not sorted ascending by cost"
+
+    # Chosen method is the cheapest among survivors.
+    assert payload["chosen_method_id"] == payload["pareto_table"][0]["method_id"]
+    assert payload["chosen_cost_eur"] == pytest.approx(
+        payload["pareto_table"][0]["cost_per_heat_eur"]
+    )
+
+    # With η_Al=0.82 (ASIS) vs 0.58 (ingot) the high-η/low-premium ASIS
+    # methods dominate the Excel base case — chosen should be one of them.
+    # Don't hardcode the exact id (catalog may evolve), just require a
+    # plausible carrier_gas configuration.
+    chosen_row = payload["pareto_table"][0]
+    assert chosen_row["al_pure_kg"] > 0
+    assert chosen_row["cost_per_heat_eur"] > 0
+
+    # No constraints active → no rejected methods → pareto = full catalog.
+    assert payload["constraints_active"] == []
+    assert payload["rejected_methods"] == []
+    assert len(payload["pareto_table"]) >= 5
+
+    # Runner-up populated since len(pareto) ≥ 2.
+    assert payload["runner_up_method_id"] is not None
+    assert payload["runner_up_delta_eur"] > 0
+
+
+def test_post_optimize_with_n_constraint(client: TestClient) -> None:
+    """target_n_ppm=30 < 50 → constraint surfaces in constraints_active.
+
+    The Pattern Library DX07 + the optimizer constraint filter share
+    the same threshold (50 ppm). With the seed YAML catalog (only
+    ``asis_shot`` has carrier_gas, set to ``Ar``) no method is dropped,
+    but the active constraint must still be echoed.
+    """
+    body = _baseline_optimize_payload()
+    body["target_n_ppm"] = 30.0
+
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    # The constraint string contains the trigger threshold (50).
+    assert any(
+        "target_n_ppm" in c and "50" in c for c in payload["constraints_active"]
+    ), f"target_n_ppm<50 not in constraints_active: {payload['constraints_active']}"
+
+
+def test_post_optimize_invalid_input_returns_422(client: TestClient) -> None:
+    """Pydantic field bounds: negative steel mass → 422."""
+    body = _baseline_optimize_payload()
+    body["steel_mass_ton"] = -10.0
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 422
+
+
+def test_post_optimize_invalid_thermo_model_400(client: TestClient) -> None:
+    """Unknown thermo_model_id → 400 (router-level), not 422."""
+    body = _baseline_optimize_payload()
+    body["thermo_model_id"] = "not_a_real_model"
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 400
+    assert "not_a_real_model" in resp.json()["detail"]
+
+
+def test_post_optimize_save_returns_501(client: TestClient) -> None:
+    """PR 8 placeholder: optimize/save always 501 (NOT IMPLEMENTED)."""
+    resp = client.post(
+        "/api/deox/optimize/save",
+        json={
+            "recommendation": {"chosen_method_id": "asis_shot"},
+            "heat_id": "TEST-001",
+            "author": "user",
+        },
+    )
+    assert resp.status_code == 501
+    detail = resp.json()["detail"]
+    # Russian, user-facing message per CLAUDE.md.
+    assert "PR 8" in detail
+
+
+def test_optimize_returns_pattern_warnings_dx04(client: TestClient) -> None:
+    """Half-filled slag block (mass without FeO) → DX04 HIGH warning.
+
+    The optimizer still produces a recommendation (slag with feo_pct=0
+    contributes 0 O), but the critic ctx marks slag-aware semantics
+    *active* (because slag_mass_kg is set) and DX04 fires because
+    slag_feo_pct is None. This is the canonical "user forgot half the
+    slag data" UX path.
+    """
+    body = _baseline_optimize_payload()
+    body.pop("slag_feo_pct")  # leave only slag_mass_kg
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+
+    warning_ids = {w.get("id") for w in payload["pattern_warnings"]}
+    assert "DX04" in warning_ids, (
+        f"DX04 (slag_aware without slag_state.feo_pct) not in warnings: "
+        f"{warning_ids}"
+    )
+    dx04 = next(w for w in payload["pattern_warnings"] if w["id"] == "DX04")
+    assert dx04["severity"] == "HIGH"

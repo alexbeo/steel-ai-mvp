@@ -64,6 +64,13 @@ from app.backend.deoxidation import (
     compute_al_demand,
     compute_al_quality,
 )
+from app.backend.slag_aware_deox import (
+    DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG,
+    CoDeoxSi,
+    SlagState,
+    load_addition_methods,
+    recommend_optimal_method,
+)
 from pattern_library.patterns import Phase, run_all_patterns
 
 logger = logging.getLogger(__name__)
@@ -197,6 +204,110 @@ class AlAdvisoryRequest(BaseModel):
         # but consistency with the other request schemas — keep it off.
         "protected_namespaces": (),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Slag-aware optimization schemas (PR 6 — Block 6 of asis-slag-aware spec)
+#
+# Three endpoints sit on top of ``app.backend.slag_aware_deox``:
+#   GET  /api/deox/methods           — UI dropdown catalog (raw YAML rows)
+#   POST /api/deox/optimize          — recommend_optimal_method + DX04-DX07
+#   POST /api/deox/optimize/save     — Decision Log integration (PR 8 stub)
+#
+# The save endpoint currently returns 501 by design — full Decision Log
+# integration (with deox_methods snapshot copy + price_snapshot_date echo)
+# lands in PR 8 of the build sequence. The placeholder is shipped now so
+# the frontend (PR 7) can wire the «Сохранить» button without a 404 race.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class OptimizationRequest(BaseModel):
+    """Slag-aware Al-deox optimization input.
+
+    Mirrors the design-doc §6 schema. Field bounds are intentionally wider
+    than the basic forward request because the slag-aware path covers
+    BOF-tap inputs (657 ppm O_a in the Excel base case, 371 t heat) that
+    the LF-only ``AlDemandRequest`` would reject. Bound order:
+
+      * ``steel_mass_ton``  1-500 t      (covers small EAF to 400 t BOF)
+      * ``o_a_initial_ppm`` 10-1500 ppm  (LF samples + BOF tap)
+      * ``target_o_a_ppm``  1-50 ppm     (always low post-deox)
+      * ``target_al_pct``   0.005-0.1 %  (residual [Al] window for HSLA / Q&T)
+
+    Optional blocks (slag B / co-deox C / constraints E) default to None
+    so the endpoint also serves as a slim "compare all methods, no slag"
+    sanity caller — useful for tests.
+    """
+
+    # ── Block A — heat ────────────────────────────────────────────────
+    steel_mass_ton: float = Field(..., ge=1.0, le=500.0)
+    o_a_initial_ppm: float = Field(..., ge=10.0, le=1500.0)
+    temperature_C: float = Field(default=1600.0, ge=1500.0, le=1700.0)
+    target_o_a_ppm: float = Field(..., ge=1.0, le=50.0)
+    target_al_pct: float = Field(..., ge=0.005, le=0.1)
+
+    # ── Block B — slag carry-over (optional) ──────────────────────────
+    # ``slag_mass_kg`` + ``slag_feo_pct`` together activate the
+    # slag-aware path. If either is None, DX04 fires when the calculation
+    # is marked slag-aware in the critic ctx (see _build_slag_aware_critic_ctx).
+    slag_mass_kg: float | None = Field(default=None, ge=0.0, le=10000.0)
+    slag_feo_pct: float | None = Field(default=None, ge=0.0, le=50.0)
+    slag_mno_pct: float = Field(default=0.0, ge=0.0, le=20.0)
+    slag_sio2_pct: float = Field(default=0.0, ge=0.0, le=30.0)
+
+    # ── Block C — Si pre-deoxidation (optional) ───────────────────────
+    co_deox_fesi_kg: float | None = Field(default=None, ge=0.0, le=5000.0)
+    co_deox_fesi_si_content_pct: float = Field(default=75.0, gt=0.0, le=100.0)
+
+    # ── Block D — methods ─────────────────────────────────────────────
+    # ``method_ids=None`` → compare against the full YAML catalog. List of
+    # strings restricts the candidate pool (handy for UI single-method drill-down).
+    method_ids: list[str] | None = None
+    user_override_eta_al: float | None = Field(default=None, ge=0.1, le=1.0)
+    t_drying_c: float | None = Field(default=None, ge=0.0, le=600.0)
+
+    # ── Block E — constraints ─────────────────────────────────────────
+    target_n_ppm: float | None = Field(default=None, ge=0.0, le=500.0)
+    premium_cap_eur_per_kg: float | None = Field(default=None, ge=0.0, le=20.0)
+
+    # ── Block F — economics + thermo ──────────────────────────────────
+    thermo_model_id: str = Field(default=DEFAULT_MODEL_ID)
+    al_commodity_price_eur_per_kg: float = Field(
+        default=DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG, ge=0.0, le=20.0
+    )
+    use_price_snapshot: bool = Field(
+        default=True,
+        description=(
+            "Reserved for PR 8 — when true, override "
+            "``al_commodity_price_eur_per_kg`` from active PriceSnapshot. "
+            "Currently informational (the optimizer reads the field "
+            "directly); kept in the schema so the frontend doesn't need "
+            "a contract bump when PR 8 wires it up."
+        ),
+    )
+
+    model_config = {"protected_namespaces": ()}
+
+
+class OptimizationSaveRequest(BaseModel):
+    """Placeholder body for ``POST /api/deox/optimize/save`` (PR 8).
+
+    Accepts the full ``OptimizationResponse`` payload (so the frontend
+    doesn't need to re-call /optimize before saving) plus an optional
+    heat identifier. PR 8 will turn this into a Decision Log entry with
+    tag ``deox_method_recommendation``; for PR 6 the handler returns 501.
+    """
+
+    recommendation: dict[str, Any] = Field(
+        ...,
+        description="Echo of OptimizationResponse — payload to log.",
+    )
+    heat_id: str | None = Field(
+        default=None,
+        max_length=50,
+        description="Optional heat identifier for audit trail.",
+    )
+    author: str = Field(default="user", max_length=50)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -724,3 +835,300 @@ def ai_cycle(req: AlAdvisoryRequest) -> dict[str, Any]:
             "save_to_decision_log": bool(req.save_to_decision_log),
         },
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Slag-aware optimization endpoints (PR 6)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _build_slag_state(req: OptimizationRequest) -> SlagState | None:
+    """Project Block B fields onto a :class:`SlagState` if either anchor is set.
+
+    "Slag-aware" is activated when **either** ``slag_mass_kg`` **or**
+    ``slag_feo_pct`` is provided — the deliberately loose trigger lets
+    DX04 fire when only one of the two is present (a half-filled form).
+    Both None → returns None (purely dissolved-O calculation; no slag
+    contribution).
+    """
+    if req.slag_mass_kg is None and req.slag_feo_pct is None:
+        return None
+    # Coerce missing component to 0 so the dataclass validates; DX04
+    # picks up the original None from the ctx dict (see helper below).
+    return SlagState(
+        mass_kg=float(req.slag_mass_kg or 0.0),
+        feo_pct=float(req.slag_feo_pct or 0.0),
+        mno_pct=float(req.slag_mno_pct),
+        sio2_pct=float(req.slag_sio2_pct),
+    )
+
+
+def _build_co_deox(req: OptimizationRequest) -> CoDeoxSi | None:
+    """Project Block C onto :class:`CoDeoxSi` or return None.
+
+    The optional FeSi pre-deox block needs the source mass to be > 0 to
+    contribute O-consumption. ``co_deox_fesi_kg=0`` reads as "no co-deox"
+    and is treated as None — keeps the response payload clean.
+    """
+    if req.co_deox_fesi_kg is None or req.co_deox_fesi_kg <= 0.0:
+        return None
+    return CoDeoxSi(
+        si_source_kg=float(req.co_deox_fesi_kg),
+        si_content_pct=float(req.co_deox_fesi_si_content_pct),
+    )
+
+
+def _build_slag_aware_critic_ctx(
+    request: OptimizationRequest,
+    chosen_method_id: str,
+) -> dict[str, Any]:
+    """Assemble the ctx dict consumed by DX04-DX07 pattern checks.
+
+    Key design points:
+
+    * ``slag_aware_calculation`` is True when *any* slag/co-deox block is
+      populated — this matches the "the user intended slag-aware semantics"
+      reading that DX04 wants. A heat with only ``slag_mass_kg`` set (no
+      FeO yet) still triggers DX04, which is correct.
+    * ``slag_state`` is a dict (not SlagState) so DX04 can inspect None
+      sub-fields. The dataclass version coerces missing values to 0.
+    * ``method`` is the *chosen* AdditionMethod from the YAML catalog —
+      DX05/DX06/DX07 read its ``raw`` / ``eta_al_range`` / ``carrier_gas``.
+    * ``co_deox_si`` mirrors Block C as a dict so future pattern checks
+      can inspect Si-content without touching the dataclass internals.
+    """
+    methods = load_addition_methods()
+    method = methods.get(chosen_method_id)
+
+    slag_aware = (
+        request.slag_mass_kg is not None
+        or request.slag_feo_pct is not None
+        or request.slag_mno_pct > 0.0
+        or request.slag_sio2_pct > 0.0
+    )
+
+    slag_state_dict: dict[str, Any] | None
+    if slag_aware:
+        slag_state_dict = {
+            "mass_kg": request.slag_mass_kg,
+            "feo_pct": request.slag_feo_pct,
+            "mno_pct": request.slag_mno_pct,
+            "sio2_pct": request.slag_sio2_pct,
+        }
+    else:
+        slag_state_dict = None
+
+    co_deox_dict: dict[str, Any] | None = None
+    if request.co_deox_fesi_kg is not None and request.co_deox_fesi_kg > 0.0:
+        co_deox_dict = {
+            "si_source_kg": request.co_deox_fesi_kg,
+            "si_content_pct": request.co_deox_fesi_si_content_pct,
+        }
+
+    return {
+        # DX04 trigger anchors
+        "slag_aware_calculation": slag_aware,
+        "slag_state": slag_state_dict,
+        # DX05 / DX06 / DX07 anchors
+        "method": method,
+        "user_override_eta_al": request.user_override_eta_al,
+        "t_drying_c": request.t_drying_c,
+        "target_n_ppm": request.target_n_ppm,
+        # Informational — surfaced into pattern.details on future checks
+        "co_deox_si": co_deox_dict,
+        # DX01/DX02 anchors (kept so the same ctx can also be passed to
+        # the forward-path patterns if someone reuses this helper).
+        "o_a_initial_ppm": request.o_a_initial_ppm,
+        "target_o_a_ppm": request.target_o_a_ppm,
+    }
+
+
+@router.get(
+    "/methods",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def list_addition_methods() -> dict[str, Any]:
+    """Expose the YAML catalog of Al addition methods for the UI dropdown.
+
+    Shape mirrors :func:`list_thermo_models` (``items`` + ``count`` +
+    ``default``) so the frontend can reuse the same render helper. Each
+    item is the *raw* YAML row with the method ``id`` added on top — the
+    frontend renders ``name`` / ``eta_al_typical`` / ``premium_eur_per_kg``
+    directly and the ``raw`` extras (``size_mm``, ``t_drying_max_c``,
+    ``notes``) feed the tooltip / inspector panel.
+
+    Default method (``asis_shot``) is hard-coded here for now — it's the
+    most representative for the BOF→LF advisory we ship; future revisions
+    may read a ``default`` key from the YAML if maintenance ergonomics
+    require flipping it without a code change.
+    """
+    methods = load_addition_methods()
+    items: list[dict[str, Any]] = []
+    for method_id, method in methods.items():
+        # Carry the full YAML row in ``raw`` for forward-compat (UI tooltip /
+        # inspector) plus flatten the canonical fields at the top level so
+        # the frontend doesn't have to dig.
+        row: dict[str, Any] = {
+            "id": method_id,
+            "name": method.name,
+            "eta_al_typical": float(method.eta_al_typical),
+            "eta_al_range": list(method.eta_al_range),
+            "premium_eur_per_kg": float(method.premium_eur_per_kg),
+            "surface_m2_per_kg": float(method.surface_m2_per_kg),
+            "carrier_gas": method.carrier_gas,
+            "notes": method.notes,
+            "extras": dict(method.raw),
+        }
+        items.append(row)
+
+    default_id = "asis_shot" if "asis_shot" in methods else next(iter(methods))
+
+    return {
+        "items": items,
+        "count": len(items),
+        "default": default_id,
+    }
+
+
+def _pareto_row_to_dict(row: Any) -> dict[str, Any]:
+    """Project ``MethodCompareRow`` (frozen dataclass) to the API shape.
+
+    We intentionally don't reuse ``dataclasses.asdict`` — the frozen
+    dataclass nests no custom types but listing the keys here documents
+    the API contract for the frontend (PR 7) and the test (test_api_deox.py).
+    """
+    return {
+        "method_id": row.method_id,
+        "method_name": row.method_name,
+        "eta_al_used": float(row.eta_al_used),
+        "al_pure_kg": float(row.al_pure_kg),
+        "al_charge_kg": float(row.al_charge_kg),
+        "cost_per_heat_eur": float(row.cost_per_heat_eur),
+        "cost_per_ton_eur": float(row.cost_per_ton_eur),
+        "al_specific_kg_per_t": float(row.al_specific_kg_per_t),
+        "carrier_gas": row.carrier_gas,
+        "scatter_kg": float(row.scatter_kg),
+        "warnings": list(row.warnings),
+    }
+
+
+@router.post(
+    "/optimize",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
+    """Recommend the optimal Al addition method for one heat.
+
+    Validation order:
+        1) Pydantic field bounds → 422 on failure.
+        2) Unknown ``thermo_model_id`` → 400 (router-level).
+        3) Unknown ``method_ids`` entries → 400 (surface from backend).
+        4) Backend ``recommend_optimal_method`` may raise ValueError if
+           constraints leave no surviving methods — surface as 400.
+        5) Pattern Library DX04-DX07 attached to ``pattern_warnings``.
+
+    The endpoint always returns a ``pareto_table`` sorted ascending by
+    ``cost_per_heat_eur``; the first row is the chosen method. When more
+    than one method survives the constraint filters, ``runner_up_*`` is
+    populated; otherwise it's None.
+
+    Decision Log save is **not** triggered here — that's the role of
+    ``POST /api/deox/optimize/save`` (PR 8 placeholder).
+    """
+    _validate_model_id(req.thermo_model_id)
+
+    slag = _build_slag_state(req)
+    co_deox = _build_co_deox(req)
+
+    try:
+        recommendation = recommend_optimal_method(
+            steel_mass_ton=req.steel_mass_ton,
+            o_a_initial_ppm=req.o_a_initial_ppm,
+            target_o_a_ppm=req.target_o_a_ppm,
+            target_al_pct=req.target_al_pct,
+            slag=slag,
+            co_deox_si=co_deox,
+            temperature_C=req.temperature_C,
+            thermo_model_id=req.thermo_model_id,
+            al_commodity_price_eur_per_kg=req.al_commodity_price_eur_per_kg,
+            method_ids=req.method_ids,
+            target_n_ppm=req.target_n_ppm,
+            premium_cap_eur_per_kg=req.premium_cap_eur_per_kg,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Pattern Library DX04-DX07. The ctx is keyed off the *chosen* method —
+    # DX05/DX06/DX07 only need to surface for the recommendation, not for
+    # every rejected candidate (those have their own ``reason`` echoed in
+    # rejected_methods). DX04 doesn't depend on the chosen method at all,
+    # so it fires regardless.
+    critic_ctx = _build_slag_aware_critic_ctx(req, recommendation.chosen_method_id)
+    pattern_dicts = run_all_patterns(critic_ctx, phase=Phase.DEOXIDATION)
+    # DX01/DX02 always run alongside DX04-DX07 since they share the phase;
+    # they're informational here (forward-path target/initial both inside
+    # the slag-aware request schema), so we keep them in the response.
+    # Use ``_serialise_warnings`` for contract parity with sibling
+    # endpoints (forward / inverse / compare) — single ``id`` key in the
+    # public payload, so the PR 7 UI can read ``w.id`` uniformly.
+    pattern_warnings = _serialise_warnings(pattern_dicts)
+
+    pareto_table = [_pareto_row_to_dict(r) for r in recommendation.pareto_table]
+
+    return {
+        "chosen_method_id": recommendation.chosen_method_id,
+        "chosen_method_name": recommendation.chosen_method_name,
+        "chosen_cost_eur": float(recommendation.chosen_cost_eur),
+        "rationale": recommendation.rationale,
+        "runner_up_method_id": recommendation.runner_up_method_id,
+        "runner_up_cost_eur": (
+            float(recommendation.runner_up_cost_eur)
+            if recommendation.runner_up_cost_eur is not None
+            else None
+        ),
+        "runner_up_delta_eur": (
+            float(recommendation.runner_up_delta_eur)
+            if recommendation.runner_up_delta_eur is not None
+            else None
+        ),
+        "constraints_active": list(recommendation.constraints_active),
+        "rejected_methods": list(recommendation.rejected_methods),
+        "pareto_table": pareto_table,
+        "pattern_warnings": pattern_warnings,
+        "thermo_model_used": req.thermo_model_id,
+        "inputs": dict(recommendation.inputs),
+    }
+
+
+@router.post(
+    "/optimize/save",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def save_optimization_recommendation(
+    req: OptimizationSaveRequest,  # noqa: ARG001 — placeholder for PR 8
+) -> dict[str, Any]:
+    """Decision Log integration — PR 8 placeholder (501 NOT IMPLEMENTED).
+
+    The save flow (copy YAML catalog snapshot to
+    ``decision_log/deox_methods_snapshots/<ts>.yaml`` + emit a
+    ``deox_method_recommendation`` Decision Log row) is out of scope for
+    PR 6 — see ``docs/superpowers/specs/2026-05-12_asis-slag-aware-deox.md``
+    §Build sequence row "PR 8".
+
+    Returning 501 (not 404) keeps the contract explicit: the endpoint
+    exists, the body shape is settled, the persistence is pending.
+    The frontend (PR 7) can already render the «Сохранить» button
+    disabled with a tooltip pointing at this message.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Сохранение рекомендации в Decision Log будет реализовано в PR 8 "
+            "(см. docs/superpowers/specs/2026-05-12_asis-slag-aware-deox.md). "
+            "В этой ревизии endpoint возвращает 501 — payload не теряется, "
+            "просто не записывается в БД."
+        ),
+    )
