@@ -13,10 +13,12 @@ Design: docs/superpowers/specs/2026-05-12_asis-slag-aware-deox.md
 PR 1 scope: YAML catalog + dataclass AdditionMethod + load_addition_methods().
 PR 2 scope: SlagState/CoDeoxSi dataclasses + compute_o_from_slag,
 compute_o_consumed_by_si — стехиометрия O-баланса.
-PR 3 scope (текущий): SlagAwareDemandResult + compute_al_demand_slag_aware —
+PR 3 scope: SlagAwareDemandResult + compute_al_demand_slag_aware —
 главная функция, комбинирующая O-баланс + вызов deoxidation.compute_al_demand
 + residual [Al] target + cost-breakdown с premium из YAML.
-Compute-функции compare_addition_methods, recommend_optimal_method — PR 4.
+PR 4 scope (текущий): compare_addition_methods + recommend_optimal_method
+с фильтрами по constraints (target_n_ppm<50 → drop N2-carrier, premium_cap),
+расширение cost_breakdown полями gas_eur / handling_eur.
 """
 from __future__ import annotations
 
@@ -269,9 +271,11 @@ class SlagAwareDemandResult:
     """Результат slag-aware расчёта потребности в Al.
 
     Поля разделены на физический баланс O, потребность Al (pure + charge),
-    cost и метаданные. ``cost_breakdown`` пока содержит ``al_commodity_eur``
-    и ``al_premium_eur`` — газовая составляющая (gas_eur) и обслуживание
-    (handling_eur) добавятся в PR 4 вместе с compare/recommend.
+    cost и метаданные. ``cost_breakdown`` содержит ``al_commodity_eur``,
+    ``al_premium_eur``, и опциональные ``gas_eur`` + ``handling_eur``
+    (заполняются только если у метода задан ``carrier_gas`` с
+    ``price_per_nm3`` / ``gas_nm3_per_kg_al`` / ``handling_eur_per_kg_al``
+    в YAML-каталоге; иначе остаются 0.0 / None).
 
     ``inputs`` — snapshot всех входных параметров для reproducibility
     (попадает в Decision Log при opt-in save). ``warnings`` — non-blocking
@@ -441,13 +445,14 @@ def compute_al_demand_slag_aware(
             f"(override={eta_al_override}, typical={method_obj.eta_al_typical})"
         )
     eta_lo, eta_hi = method_obj.eta_al_range
-    if eta_al_override is not None:
-        if eta_al_used < eta_lo - _ETA_OVERRIDE_TOLERANCE or eta_al_used > eta_hi + _ETA_OVERRIDE_TOLERANCE:
-            warnings.append(
-                f"η_Al override = {eta_al_used:.2f} вне литературного диапазона "
-                f"метода {method_obj.id} ({eta_lo:.2f}-{eta_hi:.2f}). Если основано "
-                f"на исторических данных — рекомендуется plant-specific калибровка."
-            )
+    if eta_al_override is not None and not (
+        eta_lo - _ETA_OVERRIDE_TOLERANCE <= eta_al_used <= eta_hi + _ETA_OVERRIDE_TOLERANCE
+    ):
+        warnings.append(
+            f"η_Al override = {eta_al_used:.2f} вне литературного диапазона "
+            f"метода {method_obj.id} ({eta_lo:.2f}-{eta_hi:.2f}). Если основано "
+            f"на исторических данных — рекомендуется plant-specific калибровка."
+        )
 
     # 1. O-balance
     if target_o_a_ppm >= o_a_initial_ppm:
@@ -518,10 +523,33 @@ def compute_al_demand_slag_aware(
     # 6. Cost breakdown
     al_commodity_eur = al_pure_kg * al_commodity_price_eur_per_kg
     al_premium_eur = al_pure_kg * method_obj.premium_eur_per_kg
-    cost_eur = al_commodity_eur + al_premium_eur
+
+    # Газовая составляющая (опционально): только если у метода задан carrier_gas
+    # и в YAML присутствуют ``price_per_nm3`` + ``gas_nm3_per_kg_al``. Иначе 0.0.
+    raw = method_obj.raw
+    gas_eur: float | None = None
+    if method_obj.carrier_gas is not None:
+        price_per_nm3 = raw.get("price_per_nm3")
+        gas_nm3_per_kg_al = raw.get("gas_nm3_per_kg_al")
+        if price_per_nm3 is not None and gas_nm3_per_kg_al is not None:
+            gas_eur = float(price_per_nm3) * float(gas_nm3_per_kg_al) * al_pure_kg
+        else:
+            gas_eur = 0.0
+
+    # Handling cost (опционально): wire-feeder обслуживание, injector wear, etc.
+    handling_eur_per_kg_al = raw.get("handling_eur_per_kg_al")
+    handling_eur = (
+        float(handling_eur_per_kg_al) * al_pure_kg
+        if handling_eur_per_kg_al is not None
+        else 0.0
+    )
+
+    cost_eur = al_commodity_eur + al_premium_eur + (gas_eur or 0.0) + handling_eur
     cost_breakdown = {
         "al_commodity_eur": al_commodity_eur,
         "al_premium_eur": al_premium_eur,
+        "gas_eur": gas_eur,
+        "handling_eur": handling_eur,
     }
 
     return SlagAwareDemandResult(
@@ -546,19 +574,385 @@ def compute_al_demand_slag_aware(
     )
 
 
+# ---------------------------------------------------------------------------
+# PR 4: compare_addition_methods + recommend_optimal_method
+# ---------------------------------------------------------------------------
+
+
+# Порог [N] (ppm) ниже которого N2-carrier-методы автоматически отфильтровываются
+# (N2 → pickup 5-15 ppm; для марок с target [N]<50 ppm требуется Ar). См. DX07.
+_N_PICKUP_HARD_LIMIT_PPM = 50.0
+
+
+@dataclass(frozen=True)
+class MethodCompareRow:
+    """Одна строка таблицы сравнения методов подачи Al для одной плавки.
+
+    Используется в ``compare_addition_methods`` и как ``pareto_table`` в
+    ``OptimizationRecommendation``. ``scatter_kg`` — диапазон Al-pure
+    между ``eta_al_range[0]`` (worst-case η, больше Al) и
+    ``eta_al_range[1]`` (best-case η, меньше Al); грубая оценка
+    plant-to-plant scatter без plant-specific калибровки.
+
+    Поля упорядочены так, чтобы DataFrame.from_records давал human-friendly
+    columns; ``warnings`` агрегирует non-blocking advisories per-method.
+    """
+
+    method_id: str
+    method_name: str
+    eta_al_used: float
+    al_pure_kg: float
+    al_charge_kg: float
+    cost_per_heat_eur: float
+    cost_per_ton_eur: float
+    al_specific_kg_per_t: float
+    carrier_gas: str | None
+    scatter_kg: float
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class OptimizationRecommendation:
+    """Результат ``recommend_optimal_method`` — лучший метод + контекст.
+
+    ``rationale`` — 2-3 предложения объяснения выбора (для UI + Decision Log).
+    ``constraints_active`` перечисляет применённые фильтры с описанием эффекта
+    (например ``"target_n_ppm=30<50 → исключены методы с carrier_gas=N2"``).
+    ``rejected_methods`` — методы, отсеянные constraints, с reason; pareto_table
+    — все методы, выжившие после фильтров, в порядке возрастания cost.
+    ``inputs`` — snapshot входных параметров (reproducibility).
+    """
+
+    chosen_method_id: str
+    chosen_method_name: str
+    chosen_cost_eur: float
+    rationale: str
+    runner_up_method_id: str | None
+    runner_up_cost_eur: float | None
+    runner_up_delta_eur: float | None
+    constraints_active: list[str]
+    rejected_methods: list[dict]
+    pareto_table: list[MethodCompareRow]
+    inputs: dict
+
+
+def _compute_scatter_kg(
+    *,
+    method_obj: AdditionMethod,
+    base_inputs: dict,
+    slag: SlagState | None,
+    co_deox_si: CoDeoxSi | None,
+    temperature_C: float,
+    thermo_model_id: str,
+    al_commodity_price_eur_per_kg: float,
+) -> float:
+    """± диапазон Al-pure (kg) от литературного eta_al_range метода.
+
+    Считает Al-pure при eta_lo и eta_hi, возвращает abs(delta). Это
+    grub-оценка scatter для plant-to-plant variability без калибровки.
+    """
+    eta_lo, eta_hi = method_obj.eta_al_range
+    al_lo = compute_al_demand_slag_aware(
+        method=method_obj,
+        slag=slag,
+        co_deox_si=co_deox_si,
+        eta_al_override=eta_lo,
+        temperature_C=temperature_C,
+        thermo_model_id=thermo_model_id,
+        al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+        **base_inputs,
+    ).al_pure_kg
+    al_hi = compute_al_demand_slag_aware(
+        method=method_obj,
+        slag=slag,
+        co_deox_si=co_deox_si,
+        eta_al_override=eta_hi,
+        temperature_C=temperature_C,
+        thermo_model_id=thermo_model_id,
+        al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+        **base_inputs,
+    ).al_pure_kg
+    return abs(al_lo - al_hi)
+
+
+def compare_addition_methods(
+    *,
+    steel_mass_ton: float,
+    o_a_initial_ppm: float,
+    target_o_a_ppm: float,
+    target_al_pct: float,
+    slag: SlagState | None = None,
+    co_deox_si: CoDeoxSi | None = None,
+    temperature_C: float = 1600.0,
+    thermo_model_id: str = DEFAULT_MODEL_ID,
+    al_commodity_price_eur_per_kg: float = DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG,
+    method_ids: list[str] | None = None,
+) -> list[MethodCompareRow]:
+    """Сравнить все методы подачи Al для одной плавки.
+
+    Запускает ``compute_al_demand_slag_aware`` для каждого метода в каталоге
+    (или для подмножества ``method_ids``) с одинаковыми параметрами плавки,
+    собирает results в list[MethodCompareRow] **отсортированный по
+    cost_per_heat_eur ascending** (cheapest first).
+
+    Args:
+        steel_mass_ton, o_a_initial_ppm, target_o_a_ppm, target_al_pct,
+        slag, co_deox_si, temperature_C, thermo_model_id,
+        al_commodity_price_eur_per_kg: те же параметры, что в
+            ``compute_al_demand_slag_aware``.
+        method_ids: список ID методов для сравнения. ``None`` (default) =
+            все методы из YAML.
+
+    Returns:
+        list[MethodCompareRow] sorted ascending by ``cost_per_heat_eur``.
+
+    Raises:
+        ValueError: если ``method_ids`` содержит unknown id.
+    """
+    methods = load_addition_methods()
+    if method_ids is None:
+        ids = list(methods.keys())
+    else:
+        unknown = [m for m in method_ids if m not in methods]
+        if unknown:
+            available = ", ".join(sorted(methods.keys()))
+            raise ValueError(
+                f"Unknown addition method ids: {unknown}. Available: {available}"
+            )
+        ids = list(method_ids)
+
+    base_inputs = dict(
+        steel_mass_ton=steel_mass_ton,
+        o_a_initial_ppm=o_a_initial_ppm,
+        target_o_a_ppm=target_o_a_ppm,
+        target_al_pct=target_al_pct,
+    )
+
+    rows: list[MethodCompareRow] = []
+    for mid in ids:
+        method_obj = methods[mid]
+        res = compute_al_demand_slag_aware(
+            method=method_obj,
+            slag=slag,
+            co_deox_si=co_deox_si,
+            temperature_C=temperature_C,
+            thermo_model_id=thermo_model_id,
+            al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+            **base_inputs,
+        )
+        scatter_kg = _compute_scatter_kg(
+            method_obj=method_obj,
+            base_inputs=base_inputs,
+            slag=slag,
+            co_deox_si=co_deox_si,
+            temperature_C=temperature_C,
+            thermo_model_id=thermo_model_id,
+            al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+        )
+        rows.append(
+            MethodCompareRow(
+                method_id=res.method_id,
+                method_name=res.method_name,
+                eta_al_used=res.eta_al_used,
+                al_pure_kg=res.al_pure_kg,
+                al_charge_kg=res.al_charge_kg,
+                cost_per_heat_eur=res.cost_eur,
+                cost_per_ton_eur=res.cost_per_ton_eur,
+                al_specific_kg_per_t=res.al_specific_kg_per_ton,
+                carrier_gas=method_obj.carrier_gas,
+                scatter_kg=scatter_kg,
+                warnings=list(res.warnings),
+            )
+        )
+
+    rows.sort(key=lambda r: r.cost_per_heat_eur)
+    return rows
+
+
+def recommend_optimal_method(
+    *,
+    steel_mass_ton: float,
+    o_a_initial_ppm: float,
+    target_o_a_ppm: float,
+    target_al_pct: float,
+    slag: SlagState | None = None,
+    co_deox_si: CoDeoxSi | None = None,
+    temperature_C: float = 1600.0,
+    thermo_model_id: str = DEFAULT_MODEL_ID,
+    al_commodity_price_eur_per_kg: float = DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG,
+    method_ids: list[str] | None = None,
+    target_n_ppm: float | None = None,
+    premium_cap_eur_per_kg: float | None = None,
+) -> OptimizationRecommendation:
+    """Найти оптимальный метод подачи Al с учётом constraints.
+
+    Pipeline:
+
+    1. Вызвать ``compare_addition_methods`` → full pareto_table sorted by cost.
+    2. Применить фильтры:
+       - ``target_n_ppm < 50`` → отсеять методы с ``carrier_gas == "N2"``
+         (N₂ pickup 5-15 ppm недопустим для low-N марок; см. DX07).
+       - ``premium_cap_eur_per_kg`` → отсеять методы с
+         ``method.premium_eur_per_kg > cap``.
+    3. Из выживших: chosen = min by ``cost_per_heat_eur``.
+    4. Runner-up = следующий по cost (если есть).
+    5. Rationale — 2-3 предложения для UI и Decision Log.
+
+    Args:
+        ... (см. compare_addition_methods для базовых аргументов).
+        target_n_ppm: целевая [N] в стали (ppm). Если < 50 → фильтрует
+            N₂-carrier-методы. ``None`` = no [N] constraint.
+        premium_cap_eur_per_kg: максимально допустимый premium €/kg Al-eq.
+            ``None`` = no cap.
+
+    Returns:
+        OptimizationRecommendation с chosen, runner_up, constraints_active,
+        rejected_methods и pareto_table выживших методов.
+
+    Raises:
+        ValueError: если после фильтров не осталось ни одного метода.
+    """
+    pareto = compare_addition_methods(
+        steel_mass_ton=steel_mass_ton,
+        o_a_initial_ppm=o_a_initial_ppm,
+        target_o_a_ppm=target_o_a_ppm,
+        target_al_pct=target_al_pct,
+        slag=slag,
+        co_deox_si=co_deox_si,
+        temperature_C=temperature_C,
+        thermo_model_id=thermo_model_id,
+        al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+        method_ids=method_ids,
+    )
+
+    methods = load_addition_methods()
+    constraints_active: list[str] = []
+    rejected: list[dict] = []
+    survivors: list[MethodCompareRow] = []
+
+    n_constraint_active = (
+        target_n_ppm is not None and target_n_ppm < _N_PICKUP_HARD_LIMIT_PPM
+    )
+    if n_constraint_active:
+        constraints_active.append(
+            f"target_n_ppm={target_n_ppm:.0f}<{_N_PICKUP_HARD_LIMIT_PPM:.0f} → "
+            f"исключены методы с carrier_gas=N2"
+        )
+    if premium_cap_eur_per_kg is not None:
+        constraints_active.append(
+            f"premium_cap={premium_cap_eur_per_kg:.2f}€/kg → исключены "
+            f"методы с premium выше cap"
+        )
+
+    for row in pareto:
+        method_obj = methods[row.method_id]
+        # Фильтр 1: N2-carrier при low-N target
+        if n_constraint_active and method_obj.carrier_gas == "N2":
+            rejected.append({
+                "method_id": row.method_id,
+                "reason": f"carrier_gas=N2 несовместим с target_n_ppm={target_n_ppm}",
+            })
+            continue
+        # Фильтр 2: premium cap
+        if (
+            premium_cap_eur_per_kg is not None
+            and method_obj.premium_eur_per_kg > premium_cap_eur_per_kg
+        ):
+            rejected.append({
+                "method_id": row.method_id,
+                "reason": (
+                    f"premium={method_obj.premium_eur_per_kg:.2f}€/kg > "
+                    f"cap={premium_cap_eur_per_kg:.2f}€/kg"
+                ),
+            })
+            continue
+        survivors.append(row)
+
+    if not survivors:
+        raise ValueError(
+            "После применения constraints не осталось ни одного метода. "
+            f"Active constraints: {constraints_active}. "
+            f"Rejected: {[r['method_id'] for r in rejected]}"
+        )
+
+    chosen = survivors[0]
+    runner_up = survivors[1] if len(survivors) >= 2 else None
+
+    if runner_up is not None:
+        delta_eur = runner_up.cost_per_heat_eur - chosen.cost_per_heat_eur
+        rationale = (
+            f"Выбран '{chosen.method_name}' — наименьший cost "
+            f"{chosen.cost_per_heat_eur:.0f}€ при η_Al={chosen.eta_al_used:.2f}. "
+            f"Runner-up '{runner_up.method_name}': +{delta_eur:.0f}€ "
+            f"({runner_up.cost_per_heat_eur:.0f}€)."
+        )
+        runner_up_id = runner_up.method_id
+        runner_up_cost = runner_up.cost_per_heat_eur
+    else:
+        delta_eur = None
+        rationale = (
+            f"Выбран '{chosen.method_name}' — единственный метод, удовлетворяющий "
+            f"constraints. Cost {chosen.cost_per_heat_eur:.0f}€ при "
+            f"η_Al={chosen.eta_al_used:.2f}."
+        )
+        runner_up_id = None
+        runner_up_cost = None
+
+    inputs = dict(
+        steel_mass_ton=steel_mass_ton,
+        o_a_initial_ppm=o_a_initial_ppm,
+        target_o_a_ppm=target_o_a_ppm,
+        target_al_pct=target_al_pct,
+        slag={
+            "mass_kg": slag.mass_kg,
+            "feo_pct": slag.feo_pct,
+            "mno_pct": slag.mno_pct,
+            "sio2_pct": slag.sio2_pct,
+        } if slag is not None else None,
+        co_deox_si={
+            "si_source_kg": co_deox_si.si_source_kg,
+            "si_content_pct": co_deox_si.si_content_pct,
+            "eta_si": co_deox_si.eta_si,
+        } if co_deox_si is not None else None,
+        temperature_C=temperature_C,
+        thermo_model_id=thermo_model_id,
+        al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+        method_ids=method_ids,
+        target_n_ppm=target_n_ppm,
+        premium_cap_eur_per_kg=premium_cap_eur_per_kg,
+    )
+
+    return OptimizationRecommendation(
+        chosen_method_id=chosen.method_id,
+        chosen_method_name=chosen.method_name,
+        chosen_cost_eur=chosen.cost_per_heat_eur,
+        rationale=rationale,
+        runner_up_method_id=runner_up_id,
+        runner_up_cost_eur=runner_up_cost,
+        runner_up_delta_eur=delta_eur,
+        constraints_active=constraints_active,
+        rejected_methods=rejected,
+        pareto_table=survivors,
+        inputs=inputs,
+    )
+
+
 # Suppress unused-import lint for AL_TO_O_MASS_RATIO — exposed for tests
-# и для downstream-модулей (compare_addition_methods в PR 4 будет считать
-# scatter напрямую через стехиометрию без re-import deoxidation).
+# и для downstream-модулей (Pattern Library DX*-checks в PR 5).
 __all__ = [
     "AdditionMethod",
     "SlagState",
     "CoDeoxSi",
     "SlagAwareDemandResult",
+    "MethodCompareRow",
+    "OptimizationRecommendation",
     "AL_TO_O_MASS_RATIO",
     "DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG",
     "compute_o_from_slag",
     "compute_o_consumed_by_si",
     "compute_al_demand_slag_aware",
+    "compare_addition_methods",
+    "recommend_optimal_method",
     "load_addition_methods",
     "list_method_ids",
 ]
@@ -629,4 +1023,37 @@ if __name__ == "__main__":
     print()
     print("  Excel reference (k=0.89, η≈0.80): ~454 kg Al pure on ASIS-shot.")
     print("  Our model uses literature η_Al per method from YAML catalog;")
-    print("  values agree within ±10-15% of plant calibration constant.")
+    print("  values agree within ±17% of plant calibration constant")
+    print("  (residual [Al] target учитывается у нас, но игнорируется Excel).")
+
+    print()
+    print("=" * 70)
+    print("recommend_optimal_method — Excel base + target_n_ppm=30 (PR 4):\n")
+    print("  Constraint: target_n_ppm=30 < 50 → N2-carrier методы отсеиваются.")
+    print("  Constraint: premium_cap=1.0 €/kg → cored_wire_feal30 (€2.50) отсеян.\n")
+
+    rec = recommend_optimal_method(
+        target_n_ppm=30.0,
+        premium_cap_eur_per_kg=1.0,
+        **base_inputs,
+    )
+    print(f"  Chosen: {rec.chosen_method_id} ('{rec.chosen_method_name}')")
+    print(f"  Cost:   €{rec.chosen_cost_eur:.0f}/heat")
+    print(f"  Rationale: {rec.rationale}")
+    print()
+    print("  Constraints active:")
+    for c in rec.constraints_active:
+        print(f"    - {c}")
+    print()
+    print("  Rejected methods:")
+    for rej in rec.rejected_methods:
+        print(f"    - {rej['method_id']}: {rej['reason']}")
+    print()
+    print("  Pareto table (sorted by cost ascending):")
+    for r in rec.pareto_table:
+        gas = r.carrier_gas or "—"
+        print(
+            f"    {r.method_id:>22s} | η={r.eta_al_used:.2f} | "
+            f"Al_pure={r.al_pure_kg:>6.1f} kg | "
+            f"€{r.cost_per_heat_eur:>7.1f}/heat | gas={gas}"
+        )

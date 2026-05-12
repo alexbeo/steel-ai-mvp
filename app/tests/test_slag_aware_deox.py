@@ -15,13 +15,17 @@ from app.backend.deoxidation import AL_TO_O_MASS_RATIO, compute_al_demand
 from app.backend.slag_aware_deox import (
     AdditionMethod,
     CoDeoxSi,
+    MethodCompareRow,
+    OptimizationRecommendation,
     SlagAwareDemandResult,
     SlagState,
+    compare_addition_methods,
     compute_al_demand_slag_aware,
     compute_o_consumed_by_si,
     compute_o_from_slag,
     list_method_ids,
     load_addition_methods,
+    recommend_optimal_method,
 )
 
 
@@ -532,3 +536,240 @@ def test_cost_model_rejects_unknown_kind():
     }
     with pytest.raises(ValueError, match="kind must be"):
         _validate_material_dict("bad", bad)
+
+
+# ---------------------------------------------------------------------------
+# PR 4: compare_addition_methods + recommend_optimal_method
+# ---------------------------------------------------------------------------
+
+
+def test_compare_methods_ordered_by_cost():
+    """compare_addition_methods возвращает list[MethodCompareRow] sorted ascending
+    по cost_per_heat_eur (cheapest first)."""
+    rows = compare_addition_methods(
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    assert isinstance(rows, list)
+    assert all(isinstance(r, MethodCompareRow) for r in rows)
+    assert len(rows) >= 2
+    # Sorted ascending
+    for i in range(len(rows) - 1):
+        assert rows[i].cost_per_heat_eur <= rows[i + 1].cost_per_heat_eur, (
+            f"Not sorted: rows[{i}]={rows[i].cost_per_heat_eur} > "
+            f"rows[{i+1}]={rows[i+1].cost_per_heat_eur}"
+        )
+
+
+def test_compare_methods_uses_all_catalog_methods():
+    """По умолчанию (method_ids=None) сравниваются ВСЕ методы из YAML."""
+    rows = compare_addition_methods(
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    catalog_ids = set(load_addition_methods().keys())
+    row_ids = {r.method_id for r in rows}
+    assert row_ids == catalog_ids, (
+        f"Missing methods: {catalog_ids - row_ids}; extra: {row_ids - catalog_ids}"
+    )
+    # Каждая row имеет валидный scatter_kg ≥ 0
+    for r in rows:
+        assert r.scatter_kg >= 0, f"{r.method_id}: scatter_kg={r.scatter_kg} < 0"
+
+
+def test_compare_methods_explicit_subset():
+    """method_ids=['asis_shot', 'ingot'] → только эти 2."""
+    rows = compare_addition_methods(
+        method_ids=["asis_shot", "ingot"],
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    assert {r.method_id for r in rows} == {"asis_shot", "ingot"}
+
+
+def test_compare_methods_rejects_unknown_id():
+    """compare_addition_methods с unknown method_id → ValueError."""
+    with pytest.raises(ValueError, match="Unknown addition method"):
+        compare_addition_methods(
+            method_ids=["asis_shot", "nonexistent"],
+            **_EXCEL_BASE_INPUTS,
+        )
+
+
+def test_recommend_filters_by_n_constraint(monkeypatch, tmp_path):
+    """target_n_ppm=30 → исключает методы с carrier_gas=='N2'.
+
+    В default YAML только asis_shot имеет carrier_gas (Ar). Чтобы протестировать
+    фильтр N2, временно подменяем каталог YAML на тестовый с N2-методом.
+    """
+    test_yaml = tmp_path / "test_methods.yaml"
+    test_yaml.write_text(
+        yaml.safe_dump({
+            "methods": {
+                "asis_shot_ar": {
+                    "name": "ASIS Ar",
+                    "eta_al_typical": 0.82,
+                    "eta_al_range": [0.75, 0.90],
+                    "premium_eur_per_kg": 0.30,
+                    "carrier_gas": "Ar",
+                    "surface_m2_per_kg": 1.7,
+                },
+                "asis_shot_n2": {
+                    "name": "ASIS N2",
+                    "eta_al_typical": 0.82,
+                    "eta_al_range": [0.75, 0.90],
+                    "premium_eur_per_kg": 0.20,  # дешевле — без фильтра выиграл бы
+                    "carrier_gas": "N2",
+                    "surface_m2_per_kg": 1.7,
+                },
+                "ingot_no_gas": {
+                    "name": "Ingot",
+                    "eta_al_typical": 0.58,
+                    "eta_al_range": [0.50, 0.65],
+                    "premium_eur_per_kg": 0.0,
+                    "carrier_gas": None,
+                    "surface_m2_per_kg": 0.02,
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    # Patch DEOX_METHODS_PATH через monkeypatch на module-level
+    from app.backend import slag_aware_deox
+    monkeypatch.setattr(slag_aware_deox, "DEOX_METHODS_PATH", test_yaml)
+    load_addition_methods.cache_clear()
+
+    rec = recommend_optimal_method(
+        target_n_ppm=30.0,  # < 50 → активирует фильтр N2
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+
+    # N2-метод должен быть в rejected, не в pareto
+    rejected_ids = {r["method_id"] for r in rec.rejected_methods}
+    pareto_ids = {r.method_id for r in rec.pareto_table}
+    assert "asis_shot_n2" in rejected_ids, (
+        f"N2-method should be rejected, got rejected={rejected_ids}"
+    )
+    assert "asis_shot_n2" not in pareto_ids
+    assert any("N2" in c for c in rec.constraints_active)
+
+
+def test_recommend_filters_by_premium_cap():
+    """premium_cap_eur_per_kg=0.20 → отсеивает asis_shot (0.30) и cored_wire (2.50)."""
+    rec = recommend_optimal_method(
+        premium_cap_eur_per_kg=0.20,
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    rejected_ids = {r["method_id"] for r in rec.rejected_methods}
+    assert "cored_wire_feal30" in rejected_ids
+    assert "asis_shot" in rejected_ids
+    # ingot/submerged_ingot имеют premium ≤ 0.20 → survive
+    pareto_ids = {r.method_id for r in rec.pareto_table}
+    assert "ingot" in pareto_ids
+    # constraints_active содержит описание premium-cap
+    assert any("premium" in c.lower() for c in rec.constraints_active)
+
+
+def test_recommend_returns_runner_up():
+    """С полным каталогом без constraints → chosen + runner_up оба заполнены."""
+    rec = recommend_optimal_method(
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    assert isinstance(rec, OptimizationRecommendation)
+    assert rec.chosen_method_id is not None
+    assert rec.chosen_cost_eur > 0
+    # Каталог имеет >=5 методов → runner-up должен быть
+    assert rec.runner_up_method_id is not None
+    assert rec.runner_up_cost_eur is not None
+    assert rec.runner_up_delta_eur is not None
+    # Runner-up дороже chosen (cost-asc sort)
+    assert rec.runner_up_delta_eur >= 0, (
+        f"delta {rec.runner_up_delta_eur} < 0 — runner-up should be more expensive"
+    )
+    assert rec.runner_up_cost_eur == pytest.approx(
+        rec.chosen_cost_eur + rec.runner_up_delta_eur, rel=1e-9
+    )
+
+
+def test_recommend_rationale_present():
+    """Rationale — non-empty человеческая строка с упоминанием cost и η_Al."""
+    rec = recommend_optimal_method(
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    assert isinstance(rec.rationale, str)
+    assert len(rec.rationale) > 30, f"rationale too short: {rec.rationale!r}"
+    # Должно содержать ключевые слова "cost"/"€" + "η_Al" или название метода
+    assert "€" in rec.rationale or "cost" in rec.rationale.lower()
+    assert rec.chosen_method_name in rec.rationale
+
+
+def test_recommend_raises_when_no_valid_methods(monkeypatch, tmp_path):
+    """Если все методы отфильтрованы constraints → ValueError."""
+    # Каталог только из одного N2-метода → target_n_ppm=10 отсеет его.
+    test_yaml = tmp_path / "n2_only.yaml"
+    test_yaml.write_text(
+        yaml.safe_dump({
+            "methods": {
+                "only_n2": {
+                    "name": "Only N2",
+                    "eta_al_typical": 0.80,
+                    "eta_al_range": [0.70, 0.90],
+                    "premium_eur_per_kg": 0.10,
+                    "carrier_gas": "N2",
+                    "surface_m2_per_kg": 1.0,
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    from app.backend import slag_aware_deox
+    monkeypatch.setattr(slag_aware_deox, "DEOX_METHODS_PATH", test_yaml)
+    load_addition_methods.cache_clear()
+
+    with pytest.raises(ValueError, match="не осталось"):
+        recommend_optimal_method(
+            target_n_ppm=10.0,  # < 50 → отсеит only_n2
+            **_EXCEL_BASE_INPUTS,
+        )
+
+
+def test_recommend_n_constraint_inactive_when_n_above_50():
+    """target_n_ppm=80 (>=50) → фильтр N2 НЕ активирован."""
+    rec = recommend_optimal_method(
+        target_n_ppm=80.0,
+        slag=SlagState(mass_kg=2200.0, feo_pct=18.0),
+        **_EXCEL_BASE_INPUTS,
+    )
+    # Никаких "N2" в constraints_active
+    assert not any("N2" in c for c in rec.constraints_active)
+    # asis_shot (Ar) и остальные присутствуют в pareto
+    pareto_ids = {r.method_id for r in rec.pareto_table}
+    assert pareto_ids == set(load_addition_methods().keys())
+
+
+def test_cost_breakdown_has_gas_and_handling_keys():
+    """SlagAwareDemandResult.cost_breakdown содержит gas_eur и handling_eur.
+
+    Для методов без price_per_nm3 в YAML — gas_eur=None (carrier_gas задан, но
+    цена не указана → 0.0) или None (carrier_gas отсутствует).
+    handling_eur=0.0 если handling_eur_per_kg_al не задан.
+    """
+    # asis_shot имеет carrier_gas="Ar", но без price_per_nm3 → gas_eur=0.0
+    res_asis = compute_al_demand_slag_aware(
+        method="asis_shot", **_EXCEL_BASE_INPUTS
+    )
+    assert "gas_eur" in res_asis.cost_breakdown
+    assert "handling_eur" in res_asis.cost_breakdown
+    assert res_asis.cost_breakdown["gas_eur"] == 0.0  # carrier_gas, но цены нет
+    assert res_asis.cost_breakdown["handling_eur"] == 0.0
+
+    # ingot — carrier_gas=None → gas_eur=None
+    res_ingot = compute_al_demand_slag_aware(
+        method="ingot", **_EXCEL_BASE_INPUTS
+    )
+    assert res_ingot.cost_breakdown["gas_eur"] is None
+    assert res_ingot.cost_breakdown["handling_eur"] == 0.0
