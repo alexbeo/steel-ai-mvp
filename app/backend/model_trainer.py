@@ -261,6 +261,7 @@ def train_model(
         "pipe_hsla": "hsla",
         "en10083_qt": "en10083qt",
         "fatigue_carbon_steel": "fatigue",
+        "deox_calibration": "deox",
     }.get(steel_class, "model")
     version = f"{version_prefix}_{target.replace('_mpa', '').replace('_j_cm2', '')}_xgb_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     artifact_dir = MODELS_DIR / version

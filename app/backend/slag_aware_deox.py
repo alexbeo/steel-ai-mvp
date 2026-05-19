@@ -25,8 +25,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+
+if TYPE_CHECKING:
+    from app.backend.eta_al_predictor import EtaAlPredictor
 
 from app.backend.deoxidation import (
     AL_TO_O_MASS_RATIO,
@@ -98,6 +102,58 @@ _O_PER_FEO_MASS_FRACTION = 16.0 / 72.0     # = 0.2222 (M(FeO) = 56+16 = 72)
 _O_PER_MNO_MASS_FRACTION = 16.0 / 71.0     # = 0.2254 (M(MnO) = 55+16 = 71)
 _O_PER_SIO2_MASS_FRACTION = 32.0 / 60.0    # = 0.5333 (2*O в SiO2; M(SiO2) = 28+32 = 60)
 _O_PER_SI_IN_SIO2 = 32.0 / 28.0            # = 1.1429 (O₂/Si по массе для SiO2)
+
+# Standard normal Z-score for 80% CI (10th and 90th percentiles).
+# Used for η_Al uncertainty propagation in compute_al_demand_slag_aware.
+_Z_80_CI = 1.2816
+
+
+def _invlogit_local(z: float) -> float:
+    """Inverse logit: 1 / (1 + exp(-z)). Duplicated from eta_al_calibration
+    to keep slag_aware_deox a self-contained pure-physics module."""
+    import math
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def _propagate_eta_uncertainty(
+    al_pure_kg_point: float,
+    eta_used: float,
+    posterior_logit: tuple[float, float] | None,
+) -> tuple[float, float, float]:
+    """Propagate η_Al posterior uncertainty into (p10, p50, p90) of Al_pure_kg.
+
+    Math: al_pure_kg = K / η, где K — детерминистическая часть, не зависящая от η.
+    K = al_pure_kg_point × eta_used (восстанавливаем K из существующего computed al_pure_kg).
+
+    Для монотонно убывающей функции f(η) = K/η:
+      q_α(Al) = K / q_{1-α}(η)
+
+    Если posterior_logit is None — degenerate (p10=p50=p90=al_pure_kg_point).
+
+    Args:
+        al_pure_kg_point: point estimate Al pure (= al_pure_kg в existing return)
+        eta_used: η_Al значение, использованное для point estimate
+        posterior_logit: (μ_post, σ_post) в logit-space, или None
+
+    Returns:
+        (al_p10, al_p50, al_p90) в kg.
+    """
+    if posterior_logit is None:
+        return al_pure_kg_point, al_pure_kg_point, al_pure_kg_point
+    mu, sigma = posterior_logit
+    if sigma <= 0:
+        raise ValueError(f"posterior sigma must be > 0, got {sigma}")
+    # K = Al × η, восстанавливаем из point estimate
+    K = al_pure_kg_point * eta_used
+    eta_q10 = _invlogit_local(mu - _Z_80_CI * sigma)
+    eta_q90 = _invlogit_local(mu + _Z_80_CI * sigma)
+    eta_median = _invlogit_local(mu)
+    if eta_q10 <= 0 or eta_q90 <= 0 or eta_median <= 0:
+        raise ValueError("Posterior η quantiles produced non-positive values")
+    al_p10 = K / eta_q90  # high η → low Al
+    al_p50 = K / eta_median
+    al_p90 = K / eta_q10  # low η → high Al
+    return al_p10, al_p50, al_p90
 
 
 def compute_o_from_slag(slag: SlagState) -> float:
@@ -282,7 +338,10 @@ class SlagAwareDemandResult:
     advisories (например, η_Al вне литературного диапазона метода).
     """
 
-    al_pure_kg: float                    # Потребность в чистом Al (Al-equivalent)
+    al_pure_kg: float                    # alias for al_pure_kg_p50 (backwards-compat)
+    al_pure_kg_p10: float                # 10th percentile (optimistic — η_q90)
+    al_pure_kg_p50: float                # median
+    al_pure_kg_p90: float                # 90th percentile (safety bound — η_q10)
     al_charge_kg: float                  # Потребность в charge-форме (e.g. FeAl-30)
     al_burn_off_kg: float                # Угар (Al × (1 − η_Al))
     o_dissolved_kg: float                # O в расплаве (для удаления до target)
@@ -342,6 +401,10 @@ def compute_al_demand_slag_aware(
     slag: SlagState | None = None,
     co_deox_si: CoDeoxSi | None = None,
     eta_al_override: float | None = None,
+    eta_al_posterior_logit: tuple[float, float] | None = None,
+    eta_al_predictor: "EtaAlPredictor | None" = None,
+    plant_id: str | None = None,
+    features_for_eta: dict | None = None,
     temperature_C: float = 1600.0,
     thermo_model_id: str = DEFAULT_MODEL_ID,
     al_commodity_price_eur_per_kg: float = DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG,
@@ -388,6 +451,17 @@ def compute_al_demand_slag_aware(
         co_deox_si: pre-deoxidation by FeSi/SiMn (опционально).
         eta_al_override: ручной override η_Al; если None — берётся
             method.eta_al_typical.
+        eta_al_posterior_logit: (μ, σ) posterior в logit-space из калибратора —
+            прокидывается в uncertainty propagation (p10/p50/p90).
+        eta_al_predictor: опциональный EtaAlPredictor (duck-typed). Если задан,
+            предсказывает η_Al (mix plant posterior + global ML) и переопределяет
+            eta_al_used + eta_al_posterior_logit. Collision policy:
+            override > posterior_logit > predictor > literature — predictor
+            игнорируется (с warning), если задан вместе с override или
+            posterior_logit. Требует ``plant_id``.
+        plant_id: ID плавильного цеха для predictor (обязателен если задан
+            ``eta_al_predictor``).
+        features_for_eta: словарь признаков для ML-части predictor (опционально).
         temperature_C: температура расплава (°C). По умолчанию 1600°C.
         thermo_model_id: ID термодинамической модели для compute_al_demand
             (fruehan_1985 / sigworth_elliott_1974 / hayashi_2013).
@@ -427,11 +501,88 @@ def compute_al_demand_slag_aware(
             "eta_si": co_deox_si.eta_si,
         } if co_deox_si is not None else None,
         "eta_al_override": eta_al_override,
+        "eta_al_posterior_logit": (
+            list(eta_al_posterior_logit) if eta_al_posterior_logit else None
+        ),
         "temperature_C": temperature_C,
         "thermo_model_id": thermo_model_id,
         "al_commodity_price_eur_per_kg": al_commodity_price_eur_per_kg,
+        "plant_id": plant_id,
+        "predicted_eta_metadata": None,  # заполняется ниже если задан predictor
     }
     warnings: list[str] = []
+
+    # Collision policy: override > posterior_logit > predictor > literature
+    if eta_al_predictor is not None:
+        if eta_al_override is not None or eta_al_posterior_logit is not None:
+            warnings.append(
+                "eta_al_predictor задан вместе с override/posterior_logit — "
+                "predictor проигнорирован."
+            )
+            eta_al_predictor = None
+        elif plant_id is None:
+            raise ValueError("eta_al_predictor requires plant_id")
+
+    # Predictor → resolve η + posterior (duck-typed, see EtaAlPredictor).
+    # Predictor populates BOTH eta_al_override (point) and eta_al_posterior_logit
+    # (uncertainty) intentionally: точечная оценка берёт predicted mean, а
+    # propagation использует posterior. Поэтому стандартный override+posterior
+    # collision-check ниже пропускается через _predictor_set_eta.
+    predicted_metadata: dict | None = None
+    _predictor_set_eta = False
+    if eta_al_predictor is not None:
+        pred = eta_al_predictor.predict_eta_al(
+            plant_id=plant_id,
+            method_id=method_obj.id,
+            features=features_for_eta,
+        )
+        eta_al_posterior_logit = (pred.eta_logit_mu, pred.eta_logit_sigma)
+        eta_al_override = pred.eta_mean  # переопределяет eta_al_used ниже
+        _predictor_set_eta = True
+        predicted_metadata = {
+            "model_version": pred.metadata.get("model_version"),
+            "source": pred.source,
+            "plant_weight": pred.plant_weight,
+            "n_plant_heats": pred.n_plant_heats,
+        }
+        if pred.metadata.get("warnings"):
+            warnings.extend(pred.metadata["warnings"])
+        if pred.source == "literature_fallback":
+            warnings.append(
+                "eta_al_predictor: no plant calibration, no ML model — "
+                "used literature."
+            )
+        inputs["predicted_eta_metadata"] = predicted_metadata
+
+    # Override + posterior collision → override wins, warning.
+    # Skipped when predictor set both (it intends point=mean + posterior=uncert).
+    if (
+        not _predictor_set_eta
+        and eta_al_override is not None
+        and eta_al_posterior_logit is not None
+    ):
+        warnings.append(
+            "Указан и eta_al_override и eta_al_posterior_logit — override "
+            "имеет приоритет, posterior проигнорирован (p10=p50=p90)."
+        )
+        eta_al_posterior_logit = None
+
+    # Validate posterior_logit if given
+    if eta_al_posterior_logit is not None:
+        if not (
+            isinstance(eta_al_posterior_logit, (tuple, list))
+            and len(eta_al_posterior_logit) == 2
+        ):
+            raise ValueError(
+                f"eta_al_posterior_logit must be (mu, sigma) tuple, "
+                f"got {eta_al_posterior_logit!r}"
+            )
+        mu_p, sigma_p = eta_al_posterior_logit
+        if sigma_p <= 0:
+            raise ValueError(
+                f"posterior sigma must be > 0, got {sigma_p}"
+            )
+        eta_al_posterior_logit = (float(mu_p), float(sigma_p))
 
     # η_Al
     eta_al_used = (
@@ -516,6 +667,13 @@ def compute_al_demand_slag_aware(
     )  # эквивалент: o-active часть + residual в расплаве
     al_burn_off_kg = al_pure_kg - al_active_total_kg
 
+    # Propagate η uncertainty через monotonic Al = K/η transform
+    al_p10, al_p50, al_p90 = _propagate_eta_uncertainty(
+        al_pure_kg_point=al_pure_kg,
+        eta_used=eta_al_used,
+        posterior_logit=eta_al_posterior_logit,
+    )
+
     # 5. Charge-форма (whole-wire / shot mass)
     al_content_pct = _al_content_pct_for_method(method_obj)
     al_charge_kg = al_pure_kg / (al_content_pct / 100.0)
@@ -558,7 +716,10 @@ def compute_al_demand_slag_aware(
     }
 
     return SlagAwareDemandResult(
-        al_pure_kg=al_pure_kg,
+        al_pure_kg=al_p50,
+        al_pure_kg_p10=al_p10,
+        al_pure_kg_p50=al_p50,
+        al_pure_kg_p90=al_p90,
         al_charge_kg=al_charge_kg,
         al_burn_off_kg=al_burn_off_kg,
         o_dissolved_kg=o_dissolved_kg,
@@ -587,6 +748,14 @@ def compute_al_demand_slag_aware(
 # Порог [N] (ppm) ниже которого N2-carrier-методы автоматически отфильтровываются
 # (N2 → pickup 5-15 ppm; для марок с target [N]<50 ppm требуется Ar). См. DX07.
 _N_PICKUP_HARD_LIMIT_PPM = 50.0
+
+# PR 7: multi-objective optimization.
+# ``cost``    — default (legacy behavior, min cost_per_heat_eur).
+# ``al_mass`` — min al_pure_kg (proxy for carbon footprint / Al inventory).
+# ``pareto``  — full Pareto frontier over (al_pure_kg, cost_per_heat_eur);
+#               chosen point is the knee (min L2 to utopia in normalized space).
+Objective = Literal["cost", "al_mass", "pareto"]
+OBJECTIVES: tuple[str, ...] = ("cost", "al_mass", "pareto")
 
 
 @dataclass(frozen=True)
@@ -639,6 +808,12 @@ class OptimizationRecommendation:
     rejected_methods: list[dict]
     pareto_table: list[MethodCompareRow]
     inputs: dict
+    # PR 7 — multi-objective optimization
+    # ``objective`` echoes the request ("cost" by default for backwards compat).
+    # ``pareto_frontier`` is non-empty only when objective="pareto" — list of
+    # non-dominated rows over (al_pure_kg, cost_per_heat_eur).
+    objective: str = "cost"
+    pareto_frontier: list[MethodCompareRow] = field(default_factory=list)
 
 
 def _compute_scatter_kg(
@@ -680,6 +855,106 @@ def _compute_scatter_kg(
     return abs(al_lo - al_hi)
 
 
+# ---------------------------------------------------------------------------
+# PR 7: Pareto helpers (multi-objective optimization)
+# ---------------------------------------------------------------------------
+
+
+def _is_dominated(
+    point: MethodCompareRow, others: list[MethodCompareRow]
+) -> bool:
+    """Check Pareto-dominance over (al_pure_kg, cost_per_heat_eur).
+
+    ``point`` is dominated by ``other`` iff::
+
+        other.al_pure_kg        <= point.al_pure_kg        AND
+        other.cost_per_heat_eur <= point.cost_per_heat_eur AND
+        (other.al_pure_kg       <  point.al_pure_kg OR
+         other.cost_per_heat_eur < point.cost_per_heat_eur)
+
+    The strict-inequality clause is required so two rows with identical
+    objectives don't dominate each other (degenerate case — both stay on
+    the frontier; ``_pick_knee`` then disambiguates by L2-distance order).
+
+    Identity (``other is point``) is skipped so self-comparison can't
+    falsify the strict clause.
+    """
+    for other in others:
+        if other is point:
+            continue
+        if (
+            other.al_pure_kg <= point.al_pure_kg
+            and other.cost_per_heat_eur <= point.cost_per_heat_eur
+            and (
+                other.al_pure_kg < point.al_pure_kg
+                or other.cost_per_heat_eur < point.cost_per_heat_eur
+            )
+        ):
+            return True
+    return False
+
+
+def _pareto_filter(rows: list[MethodCompareRow]) -> list[MethodCompareRow]:
+    """Return non-dominated rows preserving input order.
+
+    Naive O(n²) scan — the catalog ships <10 methods, so the speedup of a
+    sorted skyline algorithm is not worth the readability cost. Order is
+    preserved so the frontier surface in the API stays predictable across
+    runs (the caller can independently sort by cost / al_mass for display).
+    """
+    return [r for r in rows if not _is_dominated(r, rows)]
+
+
+def _pick_knee(
+    frontier: list[MethodCompareRow],
+) -> tuple[MethodCompareRow, MethodCompareRow | None, float]:
+    """Pick the knee point: min L2 to utopia in min-max normalized space.
+
+    Utopia = (al_min, cost_min) computed over the frontier. Each axis is
+    min-max normalized to [0, 1] so the distance is dimensionless and not
+    dominated by whichever axis has the larger absolute range. Returns
+    ``(best, runner_up, l2_of_best)`` where:
+
+      * ``best`` — the point with the smallest L2.
+      * ``runner_up`` — second-smallest L2; ``None`` if frontier has 1 point.
+      * ``l2_of_best`` — surfaced into the rationale for UI display.
+
+    Degenerate guards:
+      * Empty frontier → ValueError (caller guarantees ≥ 1 survivor).
+      * Single point   → (only, None, 0.0).
+      * Zero range on one axis (all rows have identical al_pure_kg, or
+        identical cost) → that axis contributes 0 to the L2 — knee then
+        becomes the min of the other axis.
+    """
+    if not frontier:
+        raise ValueError("Pareto frontier is empty")
+    if len(frontier) == 1:
+        return frontier[0], None, 0.0
+
+    als = [r.al_pure_kg for r in frontier]
+    costs = [r.cost_per_heat_eur for r in frontier]
+    al_min, al_max = min(als), max(als)
+    cost_min, cost_max = min(costs), max(costs)
+    al_range = al_max - al_min
+    cost_range = cost_max - cost_min
+
+    distances: list[tuple[float, int]] = []
+    for i, r in enumerate(frontier):
+        al_norm = (r.al_pure_kg - al_min) / al_range if al_range > 0 else 0.0
+        cost_norm = (
+            (r.cost_per_heat_eur - cost_min) / cost_range
+            if cost_range > 0
+            else 0.0
+        )
+        l2 = (al_norm ** 2 + cost_norm ** 2) ** 0.5
+        distances.append((l2, i))
+    distances.sort()  # ascending by L2
+
+    best_idx = distances[0][1]
+    runner_up = frontier[distances[1][1]] if len(distances) >= 2 else None
+    return frontier[best_idx], runner_up, distances[0][0]
+
+
 def compare_addition_methods(
     *,
     steel_mass_ton: float,
@@ -692,6 +967,9 @@ def compare_addition_methods(
     thermo_model_id: str = DEFAULT_MODEL_ID,
     al_commodity_price_eur_per_kg: float = DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG,
     method_ids: list[str] | None = None,
+    eta_al_predictor: "EtaAlPredictor | None" = None,
+    plant_id: str | None = None,
+    features_for_eta: dict | None = None,
 ) -> list[MethodCompareRow]:
     """Сравнить все методы подачи Al для одной плавки.
 
@@ -707,6 +985,14 @@ def compare_addition_methods(
             ``compute_al_demand_slag_aware``.
         method_ids: список ID методов для сравнения. ``None`` (default) =
             все методы из YAML.
+        eta_al_predictor: опциональный EtaAlPredictor — прокидывается в
+            ``compute_al_demand_slag_aware`` для каждого метода (plant posterior
+            + global ML вместо literature η). Требует ``plant_id``.
+        plant_id: ID плавильного цеха для predictor (обязателен если задан
+            ``eta_al_predictor``).
+        features_for_eta: словарь признаков для ML-части predictor (опционально).
+            ВАЖНО: scatter (sensitivity probe) намеренно НЕ использует predictor —
+            остаётся на literature η для стабильности оценки разброса.
 
     Returns:
         list[MethodCompareRow] sorted ascending by ``cost_per_heat_eur``.
@@ -743,8 +1029,14 @@ def compare_addition_methods(
             temperature_C=temperature_C,
             thermo_model_id=thermo_model_id,
             al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
+            eta_al_predictor=eta_al_predictor,
+            plant_id=plant_id,
+            features_for_eta=features_for_eta,
             **base_inputs,
         )
+        # NB: scatter is a literature-η sensitivity probe — it must NOT use
+        # the predictor (a plant/ML η would defeat the purpose of bracketing
+        # the literature η range). Left untouched on purpose.
         scatter_kg = _compute_scatter_kg(
             method_obj=method_obj,
             base_inputs=base_inputs,
@@ -788,6 +1080,10 @@ def recommend_optimal_method(
     method_ids: list[str] | None = None,
     target_n_ppm: float | None = None,
     premium_cap_eur_per_kg: float | None = None,
+    objective: str = "cost",
+    eta_al_predictor: "EtaAlPredictor | None" = None,
+    plant_id: str | None = None,
+    features_for_eta: dict | None = None,
 ) -> OptimizationRecommendation:
     """Найти оптимальный метод подачи Al с учётом constraints.
 
@@ -809,14 +1105,37 @@ def recommend_optimal_method(
             N₂-carrier-методы. ``None`` = no [N] constraint.
         premium_cap_eur_per_kg: максимально допустимый premium €/kg Al-eq.
             ``None`` = no cap.
+        objective: критерий оптимизации (PR 7). Один из ``OBJECTIVES``::
+
+            "cost"    — default; min cost_per_heat_eur (legacy behavior).
+            "al_mass" — min al_pure_kg (proxy carbon footprint / Al inventory).
+            "pareto"  — non-dominated frontier over (al_pure_kg, cost);
+                        chosen = knee point (min L2 to utopia в norm space).
+
+            Backwards compat: ``"cost"`` reproduces pre-PR-7 behavior
+            (pareto_frontier=[], pareto_table=survivors).
+        eta_al_predictor: опциональный EtaAlPredictor — прокидывается в
+            ``compare_addition_methods`` → ``compute_al_demand_slag_aware``.
+            Если None — literature η (PR 7 behavior byte-identical). Требует
+            ``plant_id``.
+        plant_id: ID плавильного цеха для predictor.
+        features_for_eta: словарь признаков для ML-части predictor (опционально).
 
     Returns:
         OptimizationRecommendation с chosen, runner_up, constraints_active,
-        rejected_methods и pareto_table выживших методов.
+        rejected_methods и pareto_table выживших методов. При
+        ``objective="pareto"`` поле ``pareto_frontier`` содержит non-dominated
+        набор; иначе пусто.
 
     Raises:
-        ValueError: если после фильтров не осталось ни одного метода.
+        ValueError: если после фильтров не осталось ни одного метода или
+            unknown objective.
     """
+    if objective not in OBJECTIVES:
+        raise ValueError(
+            f"Unknown objective: {objective!r}. Available: {OBJECTIVES}"
+        )
+
     pareto = compare_addition_methods(
         steel_mass_ton=steel_mass_ton,
         o_a_initial_ppm=o_a_initial_ppm,
@@ -828,6 +1147,9 @@ def recommend_optimal_method(
         thermo_model_id=thermo_model_id,
         al_commodity_price_eur_per_kg=al_commodity_price_eur_per_kg,
         method_ids=method_ids,
+        eta_al_predictor=eta_al_predictor,
+        plant_id=plant_id,
+        features_for_eta=features_for_eta,
     )
 
     methods = load_addition_methods()
@@ -881,28 +1203,114 @@ def recommend_optimal_method(
             f"Rejected: {[r['method_id'] for r in rejected]}"
         )
 
-    chosen = survivors[0]
-    runner_up = survivors[1] if len(survivors) >= 2 else None
+    # PR 7 — multi-objective branch. ``cost`` keeps legacy behavior
+    # (pareto_frontier=[], pareto_table=survivors sorted by cost from
+    # compare_addition_methods). ``al_mass`` re-sorts survivors ascending
+    # by al_pure_kg. ``pareto`` filters survivors to the non-dominated set
+    # and moves dominated methods to ``rejected``, then picks the knee.
+    pareto_frontier: list[MethodCompareRow] = []
+    if objective == "cost":
+        chosen = survivors[0]
+        runner_up = survivors[1] if len(survivors) >= 2 else None
+        pareto_table_out: list[MethodCompareRow] = survivors
+        if runner_up is not None:
+            delta_eur = runner_up.cost_per_heat_eur - chosen.cost_per_heat_eur
+            rationale = (
+                f"Выбран '{chosen.method_name}' — наименьший cost "
+                f"{chosen.cost_per_heat_eur:.0f}€ при η_Al={chosen.eta_al_used:.2f}. "
+                f"Runner-up '{runner_up.method_name}': +{delta_eur:.0f}€ "
+                f"({runner_up.cost_per_heat_eur:.0f}€)."
+            )
+            runner_up_id = runner_up.method_id
+            runner_up_cost = runner_up.cost_per_heat_eur
+        else:
+            delta_eur = None
+            rationale = (
+                f"Выбран '{chosen.method_name}' — единственный метод, удовлетворяющий "
+                f"constraints. Cost {chosen.cost_per_heat_eur:.0f}€ при "
+                f"η_Al={chosen.eta_al_used:.2f}."
+            )
+            runner_up_id = None
+            runner_up_cost = None
 
-    if runner_up is not None:
-        delta_eur = runner_up.cost_per_heat_eur - chosen.cost_per_heat_eur
-        rationale = (
-            f"Выбран '{chosen.method_name}' — наименьший cost "
-            f"{chosen.cost_per_heat_eur:.0f}€ при η_Al={chosen.eta_al_used:.2f}. "
-            f"Runner-up '{runner_up.method_name}': +{delta_eur:.0f}€ "
-            f"({runner_up.cost_per_heat_eur:.0f}€)."
-        )
-        runner_up_id = runner_up.method_id
-        runner_up_cost = runner_up.cost_per_heat_eur
-    else:
-        delta_eur = None
-        rationale = (
-            f"Выбран '{chosen.method_name}' — единственный метод, удовлетворяющий "
-            f"constraints. Cost {chosen.cost_per_heat_eur:.0f}€ при "
-            f"η_Al={chosen.eta_al_used:.2f}."
-        )
-        runner_up_id = None
-        runner_up_cost = None
+    elif objective == "al_mass":
+        survivors_sorted = sorted(survivors, key=lambda r: r.al_pure_kg)
+        chosen = survivors_sorted[0]
+        runner_up = survivors_sorted[1] if len(survivors_sorted) >= 2 else None
+        pareto_table_out = survivors_sorted
+        if runner_up is not None:
+            delta_al = runner_up.al_pure_kg - chosen.al_pure_kg
+            delta_eur = runner_up.cost_per_heat_eur - chosen.cost_per_heat_eur
+            rationale = (
+                f"Выбран '{chosen.method_name}' — минимальная масса Al pure "
+                f"{chosen.al_pure_kg:.1f} кг. Cost: "
+                f"{chosen.cost_per_heat_eur:.0f}€. "
+                f"Runner-up '{runner_up.method_name}': +{delta_al:.1f} кг Al."
+            )
+            runner_up_id = runner_up.method_id
+            runner_up_cost = runner_up.cost_per_heat_eur
+        else:
+            delta_eur = None
+            rationale = (
+                f"Выбран '{chosen.method_name}' — единственный метод, "
+                f"удовлетворяющий constraints. Al pure: {chosen.al_pure_kg:.1f} кг, "
+                f"cost: {chosen.cost_per_heat_eur:.0f}€."
+            )
+            runner_up_id = None
+            runner_up_cost = None
+
+    else:  # objective == "pareto" (validated above)
+        frontier = _pareto_filter(survivors)
+        frontier_ids = {r.method_id for r in frontier}
+        # Move dominated survivors to ``rejected`` with the dominator id.
+        # We find the *first* dominator to keep the message compact; multiple
+        # dominators are possible but a single one is enough evidence.
+        for s in survivors:
+            if s.method_id in frontier_ids:
+                continue
+            dom = next(
+                (
+                    o for o in survivors
+                    if o.method_id != s.method_id
+                    and o.al_pure_kg <= s.al_pure_kg
+                    and o.cost_per_heat_eur <= s.cost_per_heat_eur
+                    and (
+                        o.al_pure_kg < s.al_pure_kg
+                        or o.cost_per_heat_eur < s.cost_per_heat_eur
+                    )
+                ),
+                None,
+            )
+            rejected.append({
+                "method_id": s.method_id,
+                "reason": (
+                    f"dominated by {dom.method_id}"
+                    if dom is not None else "Pareto-dominated"
+                ),
+            })
+        chosen, runner_up, l2_best = _pick_knee(frontier)
+        pareto_frontier = frontier
+        pareto_table_out = sorted(frontier, key=lambda r: r.cost_per_heat_eur)
+        if runner_up is not None:
+            delta_eur = runner_up.cost_per_heat_eur - chosen.cost_per_heat_eur
+            rationale = (
+                f"Выбран '{chosen.method_name}' — лучший баланс "
+                f"(L2 от утопии = {l2_best:.3f}) на Pareto-фронте из "
+                f"{len(frontier)} методов (Al pure: {chosen.al_pure_kg:.1f} кг, "
+                f"cost: {chosen.cost_per_heat_eur:.0f}€). Выберите другую точку "
+                f"на графике если приоритет — только cost или только Al-mass."
+            )
+            runner_up_id = runner_up.method_id
+            runner_up_cost = runner_up.cost_per_heat_eur
+        else:
+            delta_eur = None
+            rationale = (
+                f"Выбран '{chosen.method_name}' — единственная точка на "
+                f"Pareto-фронте. Al pure: {chosen.al_pure_kg:.1f} кг, cost: "
+                f"{chosen.cost_per_heat_eur:.0f}€."
+            )
+            runner_up_id = None
+            runner_up_cost = None
 
     inputs = dict(
         steel_mass_ton=steel_mass_ton,
@@ -926,6 +1334,7 @@ def recommend_optimal_method(
         method_ids=method_ids,
         target_n_ppm=target_n_ppm,
         premium_cap_eur_per_kg=premium_cap_eur_per_kg,
+        objective=objective,
     )
 
     return OptimizationRecommendation(
@@ -938,8 +1347,10 @@ def recommend_optimal_method(
         runner_up_delta_eur=delta_eur,
         constraints_active=constraints_active,
         rejected_methods=rejected,
-        pareto_table=survivors,
+        pareto_table=pareto_table_out,
         inputs=inputs,
+        objective=objective,
+        pareto_frontier=pareto_frontier,
     )
 
 
@@ -952,6 +1363,8 @@ __all__ = [
     "SlagAwareDemandResult",
     "MethodCompareRow",
     "OptimizationRecommendation",
+    "Objective",
+    "OBJECTIVES",
     "AL_TO_O_MASS_RATIO",
     "DEFAULT_AL_COMMODITY_PRICE_EUR_PER_KG",
     "compute_o_from_slag",

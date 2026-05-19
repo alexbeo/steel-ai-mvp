@@ -16,6 +16,9 @@
 
 - `hypothesis_generator.md` — для `app/backend/hypothesis_generator.py`
 - `llm_critic.md` — для `app/backend/critic_llm.py`
+- `heat_etl_critic.md` — для `app/backend/heat_etl_critic.py` (опциональный LLM-маппер ambiguous Excel-колонок в `HeatRecord` поля; PR 3 R-003)
+- `symbolic_eta_critic.md` — для `app/backend/symbolic_eta_critic.py` (опциональный PhD-критик physical plausibility symbolic η_Al correction-формул; PR 11 R-003)
+- `high_al_diagnoser.md` — для `app/backend/high_al_diagnoser.py` (опциональный PhD process-metallurgist cohort root-cause анализ перерасхода Al; PR 12 R-003 / R-001 Block IV)
 
 ## Как получить
 

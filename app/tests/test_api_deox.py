@@ -647,3 +647,159 @@ def test_optimize_returns_pattern_warnings_dx04(client: TestClient) -> None:
     )
     dx04 = next(w for w in payload["pattern_warnings"] if w["id"] == "DX04")
     assert dx04["severity"] == "HIGH"
+
+
+# ───────── PR 7 — Multi-objective optimization ────────────────────────
+
+
+def test_optimize_default_objective_backwards_compat(client: TestClient) -> None:
+    """POST без objective field — старый response shape + objective='cost' echo.
+
+    Контракт после PR 7: response всегда содержит ``objective`` +
+    ``pareto_frontier`` ключи; default объективе ``"cost"`` и
+    ``pareto_frontier == []``. Старые клиенты (не передающие objective)
+    продолжают работать без изменений.
+    """
+    resp = client.post(
+        "/api/deox/optimize", json=_baseline_optimize_payload()
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["objective"] == "cost"
+    assert "pareto_frontier" in data
+    assert data["pareto_frontier"] == []
+
+
+def test_optimize_objective_al_mass(client: TestClient) -> None:
+    """objective='al_mass' — backend echoes the choice + chosen = min Al pure."""
+    body = _baseline_optimize_payload()
+    body["objective"] = "al_mass"
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["objective"] == "al_mass"
+    # Chosen method is the first row of pareto_table (which is sorted by
+    # al_pure_kg ascending under al_mass objective).
+    chosen_row = data["pareto_table"][0]
+    assert chosen_row["method_id"] == data["chosen_method_id"]
+    min_al = min(row["al_pure_kg"] for row in data["pareto_table"])
+    assert chosen_row["al_pure_kg"] == pytest.approx(min_al)
+
+
+def test_optimize_objective_pareto(client: TestClient) -> None:
+    """objective='pareto' — pareto_frontier ≥ 1 строки, chosen из frontier."""
+    body = _baseline_optimize_payload()
+    body["objective"] = "pareto"
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["objective"] == "pareto"
+    assert len(data["pareto_frontier"]) >= 1
+    frontier_ids = {row["method_id"] for row in data["pareto_frontier"]}
+    assert data["chosen_method_id"] in frontier_ids
+
+
+def test_optimize_objective_invalid_returns_422(client: TestClient) -> None:
+    """Invalid objective string → Pydantic 422 (pattern mismatch)."""
+    body = _baseline_optimize_payload()
+    body["objective"] = "invalid_xyz"
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 422
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PR 10 — η_Al calibration endpoints + predictor wiring
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_eta_model_status_no_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """GET /eta-al-model/status with no model dir → model_present False.
+
+    Both the predictor models dir and the calibration dir are pointed at
+    empty tmp paths so the endpoint returns the "no model / no plants"
+    skeleton without touching the real artifacts.
+    """
+    import app.backend.eta_al_calibration as cal_mod
+    import app.backend.eta_al_predictor as pred_mod
+
+    monkeypatch.setattr(pred_mod, "_DEFAULT_MODELS_DIR", tmp_path / "models")
+    monkeypatch.setattr(cal_mod, "DEFAULT_CALIB_DIR", tmp_path / "calibs")
+
+    resp = client.get("/api/deox/eta-al-model/status")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["model_present"] is False
+    assert data["model_version"] is None
+    assert data["r2_test"] is None
+    assert data["coverage_in_target"] is None
+    assert data["calibrated_plants"] == []
+
+
+def test_calibrations_list_empty(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """GET /calibrations with empty calib dir → count 0, items []."""
+    import app.backend.eta_al_calibration as cal_mod
+
+    monkeypatch.setattr(cal_mod, "DEFAULT_CALIB_DIR", tmp_path / "calibs")
+
+    resp = client.get("/api/deox/calibrations")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["count"] == 0
+    assert data["items"] == []
+
+
+def test_calibrations_run_sync_empty_db(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """POST /calibrations/run against an empty heats DB → 0 plants, sync 200.
+
+    We point the calibrator at a fresh (schema-only) heats DB so
+    ``calibrate_all_plants`` finds no distinct plant_ids and returns an
+    empty result list — exercises the sync contract without depending on
+    seeded data.
+    """
+    import app.backend.eta_al_calibration as cal_mod
+    from app.backend.heat_records import _init_db
+
+    empty_db = tmp_path / "heats.db"
+    _init_db(empty_db)
+    monkeypatch.setattr(cal_mod, "HEATS_DB_DEFAULT", empty_db)
+    monkeypatch.setattr(cal_mod, "DEFAULT_CALIB_DIR", tmp_path / "calibs")
+
+    resp = client.post("/api/deox/calibrations/run", json={})
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["plants_calibrated"] == 0
+    assert data["yaml_written"] == 0
+    assert data["results"] == []
+
+
+def test_optimize_eta_prediction_disabled_default(client: TestClient) -> None:
+    """Default optimize request → eta_prediction_used False (PR 7 behavior)."""
+    resp = client.post("/api/deox/optimize", json=_baseline_optimize_payload())
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("eta_prediction_used") is False
+
+
+def test_optimize_eta_prediction_no_plant_id_400(client: TestClient) -> None:
+    """enable_eta_prediction=True without plant_id → 400."""
+    body = _baseline_optimize_payload()
+    body["enable_eta_prediction"] = True
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 400, resp.text
+
+
+def test_optimize_eta_prediction_override_collision_400(
+    client: TestClient,
+) -> None:
+    """enable_eta_prediction + user_override_eta_al → 400 (mutual exclusion)."""
+    body = _baseline_optimize_payload()
+    body["enable_eta_prediction"] = True
+    body["plant_id"] = "PLANT_A"
+    body["user_override_eta_al"] = 0.9
+    resp = client.post("/api/deox/optimize", json=body)
+    assert resp.status_code == 400, resp.text

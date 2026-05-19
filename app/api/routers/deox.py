@@ -299,6 +299,31 @@ class OptimizationRequest(BaseModel):
         ),
     )
 
+    # ── Block G — multi-objective optimization (PR 7) ─────────────────
+    # ``cost`` keeps the legacy behavior (min cost_per_heat_eur, default).
+    # ``al_mass`` minimises pure Al mass (carbon footprint / inventory proxy).
+    # ``pareto`` returns the non-dominated frontier; chosen point is the knee
+    # (min L2 to utopia in min-max normalized space). The regex pattern keeps
+    # Pydantic-side validation aligned with the backend ``OBJECTIVES`` tuple
+    # so an invalid request short-circuits at 422 before reaching the optimizer.
+    objective: str = Field(
+        default="cost",
+        pattern="^(cost|al_mass|pareto)$",
+        description="Optimization objective: cost / al_mass / pareto",
+    )
+
+    # ── Block H — η_Al prediction (PR 10) ─────────────────────────────
+    # When ``enable_eta_prediction`` is True the optimizer threads an
+    # EtaAlPredictor (plant Bayesian posterior + global ML) through
+    # ``recommend_optimal_method`` instead of literature η. ``plant_id``
+    # is required in that case (the predictor needs it to look up the
+    # posterior). Default False reproduces PR 7 behavior byte-identical.
+    plant_id: str | None = Field(default=None, max_length=64)
+    enable_eta_prediction: bool = Field(
+        default=False,
+        description="Use EtaAlPredictor (plant posterior + ML) instead of literature η",
+    )
+
     model_config = {"protected_namespaces": ()}
 
 
@@ -894,11 +919,112 @@ def _build_co_deox(req: OptimizationRequest) -> CoDeoxSi | None:
     )
 
 
+def _build_eta_features(req: OptimizationRequest) -> dict[str, float]:
+    """Build features_for_eta dict from OptimizationRequest fields that map
+    to the deox_calibration model feature_set. method_eta_baseline and
+    plant_offset_baseline are filled by EtaAlPredictor._resolve_features.
+    Missing features → predictor degrades gracefully to plant/literature η.
+    """
+    features: dict[str, float] = {}
+    # Map request fields → model features (subset present in request). The
+    # model feature_list also expects composition / temperature-history /
+    # stir features that the OptimizationRequest does not carry — those are
+    # simply absent, and the predictor's _predict_global will fail-soft
+    # (returns None, surfaces metadata["global_error"]); the optimizer then
+    # falls back to plant posterior or literature η.
+    if req.slag_feo_pct is not None:
+        features["slag_feo_pct"] = float(req.slag_feo_pct)
+    if req.slag_mno_pct is not None:
+        features["slag_mno_pct"] = float(req.slag_mno_pct)
+    if req.slag_sio2_pct is not None:
+        features["slag_sio2_pct"] = float(req.slag_sio2_pct)
+    if req.slag_mass_kg is not None:
+        features["slag_mass_kg"] = float(req.slag_mass_kg)
+    # ``temperature_C`` maps to the model's t_al_addition_c feature (the
+    # temperature at the Al addition step — the request only carries one
+    # bulk melt temperature).
+    features["t_al_addition_c"] = float(req.temperature_C)
+    features["o_a_initial_ppm"] = float(req.o_a_initial_ppm)
+    features["steel_mass_ton"] = float(req.steel_mass_ton)
+    if req.co_deox_fesi_kg is not None:
+        features["co_deox_fesi_kg"] = float(req.co_deox_fesi_kg)
+    return features
+
+
+def _build_eta_calibration_ctx(
+    request: OptimizationRequest,
+    chosen_method_id: str,
+    method: Any,
+    eta_predictor: Any,
+) -> dict[str, Any]:
+    """Build the DX08/DX09/DX12 ctx keys from a chosen-method η_Al prediction.
+
+    Only populated when an ``eta_predictor`` was actually used (i.e.
+    ``enable_eta_prediction`` + ``plant_id``). The chosen method's prediction is
+    re-derived here (cheap — no LLM, lazy model load already warm from the
+    optimize call). All keys are best-effort: any failure leaves them absent so
+    the DX08/DX09/DX12 checks degrade to no-trigger (``ctx.get`` → None).
+
+    DX12 note (partial-dormant): ``EtaPrediction`` does not surface the global
+    ML logit-μ as a standalone field. For ``source == 'mixed'`` the predictor
+    records ``metadata['disagreement_logit'] = |mu_plant - mu_global|`` — we
+    reconstruct ``global_eta_logit_mu`` from it. For ``plant_only`` /
+    ``global_only`` / ``literature_fallback`` no global-vs-plant comparison
+    exists, so ``global_eta_logit_mu`` stays absent and DX12 stays dormant.
+    """
+    ctx: dict[str, Any] = {"min_heats_threshold": 30}
+    if eta_predictor is None or request.plant_id is None:
+        return ctx
+    try:
+        pred = eta_predictor.predict_eta_al(
+            plant_id=request.plant_id,
+            method_id=chosen_method_id,
+            features=_build_eta_features(request),
+        )
+    except Exception:
+        return ctx  # graceful — keys remain absent, DX08/09/12 no-trigger
+
+    ctx["eta_al_used"] = float(pred.eta_mean)
+    ctx["eta_calibration_source"] = pred.source
+    if method is not None:
+        eta_range = getattr(method, "eta_al_range", None)
+        if eta_range is not None and len(eta_range) == 2:
+            ctx["method_eta_range"] = [float(eta_range[0]), float(eta_range[1])]
+
+    # DX09 / DX12: plant posterior (n_heats + logit μ/σ for conflict check).
+    calibrator = getattr(eta_predictor, "calibrator", None)
+    posterior = None
+    if calibrator is not None:
+        try:
+            posterior = calibrator.get_posterior(request.plant_id, chosen_method_id)
+        except Exception:
+            posterior = None
+    if posterior is not None:
+        ctx["plant_n_heats_for_method"] = int(posterior.n_heats_used)
+        if posterior.posterior_logit_mu is not None:
+            ctx["posterior_eta_logit_mu"] = float(posterior.posterior_logit_mu)
+        if posterior.posterior_logit_sigma is not None:
+            ctx["posterior_logit_sigma"] = float(posterior.posterior_logit_sigma)
+
+    # DX12: reconstruct global ML logit-μ from the mixed-source disagreement.
+    disagreement = pred.metadata.get("disagreement_logit") if pred.metadata else None
+    if (
+        pred.source == "mixed"
+        and disagreement is not None
+        and "posterior_eta_logit_mu" in ctx
+    ):
+        # Sign is irrelevant — DX12 uses |posterior_mu - global_mu|.
+        ctx["global_eta_logit_mu"] = ctx["posterior_eta_logit_mu"] - float(disagreement)
+
+    return ctx
+
+
 def _build_slag_aware_critic_ctx(
     request: OptimizationRequest,
     chosen_method_id: str,
+    eta_predictor: Any = None,
 ) -> dict[str, Any]:
-    """Assemble the ctx dict consumed by DX04-DX07 pattern checks.
+    """Assemble the ctx dict consumed by DX04-DX12 pattern checks.
 
     Key design points:
 
@@ -912,6 +1038,9 @@ def _build_slag_aware_critic_ctx(
       DX05/DX06/DX07 read its ``raw`` / ``eta_al_range`` / ``carrier_gas``.
     * ``co_deox_si`` mirrors Block C as a dict so future pattern checks
       can inspect Si-content without touching the dataclass internals.
+    * DX08/DX09/DX12 keys are filled only when ``eta_predictor`` was used —
+      see :func:`_build_eta_calibration_ctx`. DX10 ships dormant (basicity
+      keys are never set here yet).
     """
     methods = load_addition_methods()
     method = methods.get(chosen_method_id)
@@ -941,7 +1070,7 @@ def _build_slag_aware_critic_ctx(
             "si_content_pct": request.co_deox_fesi_si_content_pct,
         }
 
-    return {
+    ctx: dict[str, Any] = {
         # DX04 trigger anchors
         "slag_aware_calculation": slag_aware,
         "slag_state": slag_state_dict,
@@ -957,6 +1086,11 @@ def _build_slag_aware_critic_ctx(
         "o_a_initial_ppm": request.o_a_initial_ppm,
         "target_o_a_ppm": request.target_o_a_ppm,
     }
+    # PR 13: DX08/DX09/DX12 η_Al calibration keys (only if predictor used).
+    ctx.update(
+        _build_eta_calibration_ctx(request, chosen_method_id, method, eta_predictor)
+    )
+    return ctx
 
 
 @router.get(
@@ -1058,6 +1192,31 @@ def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
     slag = _build_slag_state(req)
     co_deox = _build_co_deox(req)
 
+    # PR 10 — optional η_Al prediction. Mutual exclusion: a manual
+    # ``user_override_eta_al`` and the predictor can't both drive η.
+    if req.enable_eta_prediction and req.user_override_eta_al is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="enable_eta_prediction несовместим с user_override_eta_al",
+        )
+
+    eta_predictor = None
+    features_for_eta = None
+    if req.enable_eta_prediction:
+        if req.plant_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="enable_eta_prediction requires plant_id",
+            )
+        # Per-request instantiation (simple — the predictor lazy-loads the
+        # model bundle on first predict and the calibrator reads YAML on
+        # demand, so the per-request cost is small).
+        from app.backend.eta_al_calibration import EtaAlCalibrator
+        from app.backend.eta_al_predictor import EtaAlPredictor
+
+        eta_predictor = EtaAlPredictor(calibrator=EtaAlCalibrator())
+        features_for_eta = _build_eta_features(req)
+
     try:
         recommendation = recommend_optimal_method(
             steel_mass_ton=req.steel_mass_ton,
@@ -1072,6 +1231,10 @@ def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
             method_ids=req.method_ids,
             target_n_ppm=req.target_n_ppm,
             premium_cap_eur_per_kg=req.premium_cap_eur_per_kg,
+            objective=req.objective,
+            eta_al_predictor=eta_predictor,
+            plant_id=req.plant_id,
+            features_for_eta=features_for_eta,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1081,7 +1244,9 @@ def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
     # every rejected candidate (those have their own ``reason`` echoed in
     # rejected_methods). DX04 doesn't depend on the chosen method at all,
     # so it fires regardless.
-    critic_ctx = _build_slag_aware_critic_ctx(req, recommendation.chosen_method_id)
+    critic_ctx = _build_slag_aware_critic_ctx(
+        req, recommendation.chosen_method_id, eta_predictor=eta_predictor
+    )
     pattern_dicts = run_all_patterns(critic_ctx, phase=Phase.DEOXIDATION)
     # DX01/DX02 always run alongside DX04-DX07 since they share the phase;
     # they're informational here (forward-path target/initial both inside
@@ -1092,6 +1257,12 @@ def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
     pattern_warnings = _serialise_warnings(pattern_dicts)
 
     pareto_table = [_pareto_row_to_dict(r) for r in recommendation.pareto_table]
+    # PR 7 — multi-objective: echo the requested objective + (for "pareto")
+    # the non-dominated frontier so the UI can render a scatter chart.
+    # For "cost"/"al_mass" the frontier is empty by design.
+    pareto_frontier = [
+        _pareto_row_to_dict(r) for r in recommendation.pareto_frontier
+    ]
 
     return {
         "chosen_method_id": recommendation.chosen_method_id,
@@ -1115,6 +1286,9 @@ def optimize_deox_method(req: OptimizationRequest) -> dict[str, Any]:
         "pattern_warnings": pattern_warnings,
         "thermo_model_used": req.thermo_model_id,
         "inputs": dict(recommendation.inputs),
+        "objective": recommendation.objective,
+        "pareto_frontier": pareto_frontier,
+        "eta_prediction_used": bool(req.enable_eta_prediction),
     }
 
 
@@ -1253,6 +1427,7 @@ def save_optimization_recommendation(
             method_ids=req.method_ids,
             target_n_ppm=req.target_n_ppm,
             premium_cap_eur_per_kg=req.premium_cap_eur_per_kg,
+            objective=req.objective,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1328,6 +1503,10 @@ def save_optimization_recommendation(
         "chosen_method_name": recommendation.chosen_method_name,
         "constraints_active": list(recommendation.constraints_active),
         "inputs": dict(recommendation.inputs),
+        # PR 7 — multi-objective: persist the requested criterion so the
+        # History tab can render the choice basis without re-deriving it
+        # from the rationale string.
+        "objective": req.objective,
     }
 
     # ``al_pure_kg`` of the chosen row goes into the decision summary —
@@ -1361,4 +1540,159 @@ def save_optimization_recommendation(
         "methods_snapshot_sha256": snapshot_sha256,
         "chosen_method_id": recommendation.chosen_method_id,
         "chosen_cost_eur": float(recommendation.chosen_cost_eur),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# η_Al calibration + model status endpoints (PR 10)
+#
+# Three read/run endpoints feed the «🎯 Калибровка η_Al» sub-tab:
+#   GET  /api/deox/eta-al-model/status — trained ML model metrics + plants
+#   GET  /api/deox/calibrations        — plant×method Bayesian posteriors
+#   POST /api/deox/calibrations/run    — (re)run calibration sync
+#
+# Calibration runs synchronously (no job infra) — the Bayesian update is a
+# closed-form logit-space conjugate step over a handful of heats per plant,
+# fast enough to block the request thread.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _list_calibrated_plants() -> list[str]:
+    """Return plant_ids that have a calibration YAML on disk (stem = plant_id)."""
+    from app.backend.eta_al_calibration import DEFAULT_CALIB_DIR
+
+    if not DEFAULT_CALIB_DIR.exists():
+        return []
+    return sorted(p.stem for p in DEFAULT_CALIB_DIR.glob("*.yaml"))
+
+
+@router.get(
+    "/eta-al-model/status",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def eta_al_model_status() -> dict[str, Any]:
+    """Status of trained η_Al ML model + list of calibrated plants.
+
+    ``coverage_in_target`` flags whether the 90% CI empirical coverage sits
+    in the M02 acceptance band (85–95%). The UI renders an amber pill when
+    it's out of band.
+    """
+    import json
+
+    from app.backend.eta_al_predictor import _DEFAULT_MODELS_DIR, _scan_latest_model
+
+    version = _scan_latest_model(_DEFAULT_MODELS_DIR)
+    if version is None:
+        return {
+            "model_present": False,
+            "model_version": None,
+            "r2_test": None,
+            "coverage_90_ci": None,
+            "coverage_in_target": None,
+            "trained_at": None,
+            "n_train": None,
+            "calibrated_plants": _list_calibrated_plants(),
+        }
+    meta_path = _DEFAULT_MODELS_DIR / version / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    metrics = meta.get("metrics", {})
+    r2 = metrics.get("r2_test")
+    coverage = metrics.get("coverage_90_ci")
+    coverage_in_target = coverage is not None and 0.85 <= coverage <= 0.95
+    return {
+        "model_present": True,
+        "model_version": version,
+        "r2_test": r2,
+        "coverage_90_ci": coverage,
+        "coverage_in_target": coverage_in_target,
+        "trained_at": meta.get("trained_at"),
+        "n_train": metrics.get("n_train"),
+        "calibrated_plants": _list_calibrated_plants(),
+    }
+
+
+@router.get(
+    "/calibrations",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def list_calibrations() -> dict[str, Any]:
+    """All plant×method posteriors flattened from the calibration YAML files.
+
+    One row per (plant_id, method_id). ``skipped_reason`` is non-null for
+    methods that had too few heats to update the prior — the UI tags those.
+    """
+    import yaml
+
+    from app.backend.eta_al_calibration import DEFAULT_CALIB_DIR
+
+    items: list[dict[str, Any]] = []
+    if DEFAULT_CALIB_DIR.exists():
+        for yaml_path in sorted(DEFAULT_CALIB_DIR.glob("*.yaml")):
+            data = yaml.safe_load(yaml_path.read_text()) or {}
+            plant_id = data.get("plant_id", yaml_path.stem)
+            for method_id, c in (data.get("calibrations") or {}).items():
+                items.append(
+                    {
+                        "plant_id": plant_id,
+                        "method_id": method_id,
+                        "n_heats_used": c.get("n_heats_used"),
+                        "posterior_eta_mean": c.get("posterior_eta_mean"),
+                        "posterior_eta_q05": c.get("posterior_eta_q05"),
+                        "posterior_eta_q95": c.get("posterior_eta_q95"),
+                        "prior_eta_mean": c.get("prior_eta_mean"),
+                        "skipped_reason": c.get("skipped_reason"),
+                    }
+                )
+    return {"items": items, "count": len(items)}
+
+
+class CalibrationRunRequest(BaseModel):
+    """Body for ``POST /api/deox/calibrations/run``.
+
+    ``plant_id=None`` → calibrate every plant found in the heats DB.
+    A non-null ``plant_id`` restricts the run to that single plant.
+    """
+
+    plant_id: str | None = Field(default=None, max_length=64)
+
+    model_config = {"protected_namespaces": ()}
+
+
+@router.post(
+    "/calibrations/run",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def run_calibration(req: CalibrationRunRequest) -> dict[str, Any]:
+    """Run Bayesian η_Al calibration synchronously.
+
+    Optional ``plant_id`` for a single-plant run; otherwise all plants in the
+    heats DB are calibrated. Each plant with ≥1 calibrated method writes a
+    YAML posterior file + a Decision Log entry (handled inside the calibrator).
+    """
+    from app.backend.eta_al_calibration import EtaAlCalibrator
+
+    cal = EtaAlCalibrator()
+    if req.plant_id:
+        results = [cal.calibrate_plant(req.plant_id)]
+    else:
+        results = cal.calibrate_all_plants()
+    return {
+        "plants_calibrated": len(results),
+        "yaml_written": sum(1 for r in results if r.yaml_written),
+        "results": [
+            {
+                "plant_id": r.plant_id,
+                "n_total_heats": r.n_total_heats,
+                "methods_calibrated": sum(
+                    1 for p in r.calibrations if p.skipped_reason is None
+                ),
+                "methods_skipped": sum(
+                    1 for p in r.calibrations if p.skipped_reason is not None
+                ),
+            }
+            for r in results
+        ],
     }

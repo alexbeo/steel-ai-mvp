@@ -45,32 +45,71 @@ def make_orchestrator() -> Orchestrator:
     )
 
 
-def run_full(target_min: float, target_max: float, max_cev: float, max_pcm: float):
+def run_full(
+    target_min: float,
+    target_max: float,
+    max_cev: float,
+    max_pcm: float,
+    steel_class: str = "pipe_hsla",
+    target_property: str | None = None,
+    n_rows: int | None = None,
+    n_optuna_trials: int = 40,
+):
     orch = make_orchestrator()
-    user_request = {
-        "task_type": "inverse_design",
-        "target_property": "yield_strength_mpa",
-        "targets": {
-            "yield_strength_mpa": {"min": target_min, "max": target_max},
-        },
-        "constraints": {
+
+    # Defaults per steel_class. Для process feedback классов
+    # (deox_calibration) inverse_design фаза пропускается Orchestrator-ом,
+    # так что targets/constraints не нужны.
+    default_target = {
+        "pipe_hsla": "yield_strength_mpa",
+        "en10083_qt": "tensile_strength_mpa",
+        "fatigue_carbon_steel": "fatigue_strength_mpa",
+        "deox_calibration": "eta_al_effective",
+    }.get(steel_class, "yield_strength_mpa")
+    target = target_property or default_target
+
+    user_request: dict = {
+        "task_type": "train" if steel_class == "deox_calibration" else "inverse_design",
+        "steel_class": steel_class,
+        "target_property": target,
+        "n_optuna_trials": n_optuna_trials,
+    }
+    if n_rows is not None:
+        user_request["n_rows"] = n_rows
+
+    # Inverse-design targets/constraints — только для HSLA pipeline.
+    if steel_class == "pipe_hsla":
+        user_request["targets"] = {
+            target: {"min": target_min, "max": target_max},
+        }
+        user_request["constraints"] = {
             "cev_iiw": {"max": max_cev},
             "pcm": {"max": max_pcm},
-        },
-    }
+        }
+
     state = orch.run_pipeline(user_request)
     
     print("\n" + "=" * 70)
     print("PIPELINE FINISHED")
     print("=" * 70)
-    
+
     if state.report_paths.get("report_html_path"):
         print(f"\nОтчёт: {state.report_paths['report_html_path']}")
-    
+
+    # Для process feedback классов inverse_design фаза не запускалась —
+    # вместо кандидатов выводим training metrics.
+    if state.model:
+        print(f"\nМодель: {state.model.get('version', '<unknown>')}")
+        r2_test = state.model.get("r2_test")
+        if r2_test is not None:
+            print(f"  R² test = {r2_test:.3f}")
+        mae = state.model.get("mae_test")
+        if mae is not None:
+            print(f"  MAE test = {mae:.4f}")
+
     n_approved = len(state.validated_candidates)
-    print(f"Валидных кандидатов: {n_approved}")
-    
     if n_approved:
+        print(f"Валидных кандидатов: {n_approved}")
         top = state.validated_candidates[0]
         print(f"\nТоп-кандидат:")
         comp = top["composition"]
@@ -78,7 +117,7 @@ def run_full(target_min: float, target_max: float, max_cev: float, max_pcm: floa
               f"Nb={comp.get('nb_pct', 0):.4f}, Ti={comp.get('ti_pct', 0):.4f}")
         print(f"  Прогноз σт = {top['predicted']['mean']:.0f} ± {top['predicted']['ci_half_width']:.0f} МПа")
         print(f"  CEV = {top['derived']['cev_iiw']:.3f}")
-    
+
     print(f"\nCritic reports: {len(state.critic_reports)}")
     for r in state.critic_reports:
         v = r.verdict.value if hasattr(r.verdict, "value") else str(r.verdict)
@@ -89,18 +128,41 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--full", action="store_true", help="Run full pipeline end-to-end")
     parser.add_argument("--step", choices=["data", "features", "train", "design", "report"])
+    parser.add_argument(
+        "--class", dest="steel_class", default="pipe_hsla",
+        choices=["pipe_hsla", "en10083_qt", "fatigue_carbon_steel", "deox_calibration"],
+        help="Steel class id (см. data/steel_classes/<id>.yaml).",
+    )
+    parser.add_argument(
+        "--target-property", default=None,
+        help="Override default target (например, eta_al_effective для deox_calibration).",
+    )
+    parser.add_argument(
+        "--n-rows", type=int, default=None,
+        help="Override число строк synthetic-датасета.",
+    )
+    parser.add_argument(
+        "--n-optuna-trials", type=int, default=40,
+        help="Optuna trials для XGBoost HP tuning.",
+    )
     parser.add_argument("--target-min", type=float, default=485)
     parser.add_argument("--target-max", type=float, default=580)
     parser.add_argument("--max-cev", type=float, default=0.43)
     parser.add_argument("--max-pcm", type=float, default=0.22)
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
-    
+
     log_level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(message)s")
-    
+
     if args.full or not args.step:
-        run_full(args.target_min, args.target_max, args.max_cev, args.max_pcm)
+        run_full(
+            args.target_min, args.target_max, args.max_cev, args.max_pcm,
+            steel_class=args.steel_class,
+            target_property=args.target_property,
+            n_rows=args.n_rows,
+            n_optuna_trials=args.n_optuna_trials,
+        )
     elif args.step == "data":
         from app.backend.data_curator import save_sample_dataset
         path = save_sample_dataset()

@@ -325,10 +325,81 @@ class DataCuratorAgent:
     def run(self, state, task: dict):
         from app.backend.engine import AgentResult
         from decision_log.logger import log_decision
-        
+
         operation = task.get("operation")
-        
+        steel_class = task.get("steel_class", "pipe_hsla")
+
         try:
+            # ── PR 8: non-HSLA classes (deox_calibration, en10083_qt,
+            #         fatigue_carbon_steel) — generic путь через registry.
+            if operation == "download_nims_hsla" and steel_class != "pipe_hsla":
+                from app.backend.steel_classes import (
+                    get_synthetic_generator,
+                    load_steel_class,
+                )
+
+                profile = load_steel_class(steel_class)
+                gen = get_synthetic_generator(profile.synthetic_generator_name)
+                n_rows = task.get("n_rows") or 500
+                # Generator-specific kwarg: HSLA/Q&T → n_samples,
+                # deox_calibration / fatigue loader → n_heats / n_samples.
+                # Probe signature to pick the right kwarg.
+                import inspect
+                sig = inspect.signature(gen)
+                if "n_heats" in sig.parameters:
+                    df = gen(n_heats=n_rows)
+                elif "n_samples" in sig.parameters:
+                    df = gen(n_samples=n_rows)
+                else:
+                    df = gen()
+
+                # Для process feedback классов (нет preprocessing) сразу
+                # сохраняем как clean_path. Для остальных — как raw_path,
+                # последующий preprocessing шаг сделает clean.
+                file_stem = (
+                    f"{steel_class}_clean" if steel_class == "deox_calibration"
+                    else f"{steel_class}_synthetic"
+                )
+                out_path = DATA_DIR / f"{file_stem}.parquet"
+                df.to_parquet(out_path, index=False)
+
+                log_decision(
+                    phase="data_acquisition",
+                    decision=(
+                        f"Сгенерирован синтетический датасет для класса "
+                        f"{steel_class!r} ({len(df)} строк)"
+                    ),
+                    reasoning=(
+                        f"Использован generator '{profile.synthetic_generator_name}' "
+                        f"из registry steel_classes."
+                    ),
+                    context={
+                        "path": str(out_path),
+                        "n_rows": len(df),
+                        "steel_class": steel_class,
+                    },
+                    author="data_curator",
+                    tags=["data_source", steel_class],
+                )
+
+                # clean_path для process feedback (нет preprocessing фазы);
+                # raw_path для всех — backwards-compat.
+                output: dict = {
+                    "raw_path": str(out_path),
+                    "n_rows": len(df),
+                    "has_time_column": "heat_date" in df.columns,
+                    "has_groups": "campaign_id" in df.columns,
+                    "steel_class": steel_class,
+                }
+                if steel_class == "deox_calibration":
+                    output["clean_path"] = str(out_path)
+
+                return AgentResult(
+                    agent_name=self.name,
+                    success=True,
+                    output=output,
+                )
+
             if operation == "download_nims_hsla":
                 path = DATA_DIR / "hsla_synthetic.parquet"
                 if not path.exists():
@@ -406,6 +477,149 @@ class DataCuratorAgent:
             return AgentResult(
                 agent_name=self.name, success=False, output={}, error=str(e),
             )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Synthetic generator для virtual class deox_calibration (R-004 PR 4)
+# ──────────────────────────────────────────────────────────────────────
+
+# Plant-specific смещения η_Al (multi-plant variability). Pre-агрегированы
+# в `plant_offset_baseline` numeric feature — Pattern A из design-doc, без
+# OneHot/категорий в feature_set профиля.
+PLANT_OFFSETS = {"PLANT_A": +0.02, "PLANT_B": 0.00, "PLANT_C": -0.03}
+
+
+def generate_synthetic_deox_calibration_dataset(
+    n_heats: int = 500, random_seed: int = 42
+) -> pd.DataFrame:
+    """Synthetic LF deox heats для virtual class deox_calibration.
+
+    Physics-based генератор для калибровки η_Al модели в Tier 2 capabilities
+    (PR 8 ML, PR 11 symbolic regression, PR 12 anomaly explainer).
+
+    Модель η_Al::
+
+        η = method_baseline
+            − 0.0030 × FeO% × (slag_mass / 2000)        # FeO re-oxidation
+            − 0.0015 × max(0, T_Al − 1620°C)            # high-T burn-off
+            + 0.05  × (vacuum_treatment == "VD")        # VD lowers pO2
+            + 0.025 × (co_deox_FeSi > 50 kg)            # Si pre-deox helps
+            − 0.0005 × refractory_heat_count            # lining age
+            − 0.003  × max(0, dt_to_al_min − 5)         # late addition penalty
+            + plant_offset
+            + N(0, 0.04)
+        η ∈ [0.30, 0.99] (clipped)
+
+    method_eta_baseline / plant_offset_baseline pre-aggregated as **numeric**
+    features (Option A) — категориальные method_id/plant_id остаются в
+    DataFrame для трассировки и heats.db reference, но НЕ в profile.feature_set.
+
+    Args:
+        n_heats: число синтетических плавок. По умолчанию 500.
+        random_seed: seed для reproducibility.
+
+    Returns:
+        DataFrame с колонками heat_id / heat_date / campaign_id (для M07
+        GroupKFold), категориями (plant_id, method_id, addition_timing,
+        carrier_gas, vacuum_treatment) для трассировки + всеми numeric
+        features из feature_set профиля + target eta_al_effective.
+    """
+    from app.backend.slag_aware_deox import load_addition_methods
+
+    rng = np.random.default_rng(random_seed)
+    methods = load_addition_methods()
+    method_ids = list(methods.keys())
+    plants = list(PLANT_OFFSETS.keys())
+
+    method_choice = rng.choice(method_ids, size=n_heats)
+    plant_choice = rng.choice(plants, size=n_heats)
+
+    # numeric process variables — физически правдоподобные диапазоны LF
+    c_pct = rng.uniform(0.04, 0.50, n_heats)
+    mn_pct = rng.uniform(0.4, 1.8, n_heats)
+    si_pct = rng.uniform(0.15, 0.5, n_heats)
+    s_pct = rng.uniform(0.003, 0.030, n_heats)
+    p_pct = rng.uniform(0.005, 0.025, n_heats)
+    slag_mass_kg = rng.uniform(1000, 3500, n_heats)
+    slag_feo_pct = rng.uniform(2.0, 35.0, n_heats)
+    slag_mno_pct = rng.uniform(0.5, 8.0, n_heats)
+    slag_sio2_pct = rng.uniform(5.0, 22.0, n_heats)
+    slag_cao_pct = rng.uniform(35.0, 60.0, n_heats)
+    t_tap_c = rng.uniform(1610, 1680, n_heats)
+    t_lf_arrival_c = rng.uniform(1560, 1620, n_heats)
+    t_al_addition_c = rng.uniform(1580, 1660, n_heats)
+    dt_to_al_min = rng.uniform(2.0, 25.0, n_heats)
+    co_deox_fesi_kg = rng.uniform(0.0, 300.0, n_heats)
+    ar_stir_nm3 = rng.uniform(0.0, 30.0, n_heats)
+    refractory_heat_count = rng.integers(1, 200, n_heats).astype(float)
+    steel_mass_ton = rng.uniform(150.0, 400.0, n_heats)
+    o_a_initial_ppm = rng.uniform(200.0, 800.0, n_heats)
+
+    # baselines (numeric features for feature_set)
+    method_eta_baseline = np.array(
+        [methods[m].eta_al_typical for m in method_choice]
+    )
+    plant_offset_baseline = np.array([PLANT_OFFSETS[p] for p in plant_choice])
+
+    # категориальные — только для трассировки, не в feature_set
+    vacuum_treatment = rng.choice(["none", "VD"], n_heats, p=[0.85, 0.15])
+    carrier_gas = np.where(
+        np.isin(method_choice, ["asis_shot"]),
+        rng.choice(["Ar", "N2"], n_heats, p=[0.8, 0.2]),
+        "none",
+    )
+    addition_timing = rng.choice(
+        ["in_stream", "trim_after_lf_arrival", "split"], n_heats
+    )
+
+    # physics-based η_Al
+    eta = method_eta_baseline.copy()
+    eta -= 0.0030 * slag_feo_pct * (slag_mass_kg / 2000.0)
+    eta -= 0.0015 * np.maximum(0.0, t_al_addition_c - 1620.0)
+    eta += 0.05 * (vacuum_treatment == "VD")
+    eta += 0.025 * (co_deox_fesi_kg > 50.0)
+    eta -= 0.0005 * refractory_heat_count
+    eta -= 0.003 * np.maximum(0.0, dt_to_al_min - 5.0)
+    eta += plant_offset_baseline
+    eta += rng.normal(0, 0.04, n_heats)
+    eta = np.clip(eta, 0.30, 0.99)
+
+    # campaign_id: 40 heats group (refractory campaign) для GroupKFold M07
+    campaign_id = [f"C-{i // 40:03d}" for i in range(n_heats)]
+    heat_date = pd.date_range("2024-06-01", periods=n_heats, freq="2h")
+
+    return pd.DataFrame({
+        "heat_id": [f"DH-{i:06d}" for i in range(n_heats)],
+        "heat_date": heat_date,
+        "campaign_id": campaign_id,
+        "plant_id": plant_choice,
+        "method_id": method_choice,
+        "addition_timing": addition_timing,
+        "carrier_gas": carrier_gas,
+        "vacuum_treatment": vacuum_treatment,
+        "c_pct": np.round(c_pct, 4),
+        "mn_pct": np.round(mn_pct, 4),
+        "si_pct": np.round(si_pct, 4),
+        "s_pct": np.round(s_pct, 4),
+        "p_pct": np.round(p_pct, 4),
+        "slag_mass_kg": np.round(slag_mass_kg, 1),
+        "slag_feo_pct": np.round(slag_feo_pct, 2),
+        "slag_mno_pct": np.round(slag_mno_pct, 2),
+        "slag_sio2_pct": np.round(slag_sio2_pct, 2),
+        "slag_cao_pct": np.round(slag_cao_pct, 2),
+        "t_tap_c": np.round(t_tap_c, 1),
+        "t_lf_arrival_c": np.round(t_lf_arrival_c, 1),
+        "t_al_addition_c": np.round(t_al_addition_c, 1),
+        "dt_to_al_min": np.round(dt_to_al_min, 2),
+        "co_deox_fesi_kg": np.round(co_deox_fesi_kg, 1),
+        "ar_stir_nm3": np.round(ar_stir_nm3, 2),
+        "refractory_heat_count": refractory_heat_count.astype(int),
+        "steel_mass_ton": np.round(steel_mass_ton, 1),
+        "o_a_initial_ppm": np.round(o_a_initial_ppm, 1),
+        "method_eta_baseline": np.round(method_eta_baseline, 4),
+        "plant_offset_baseline": np.round(plant_offset_baseline, 4),
+        "eta_al_effective": np.round(eta, 4),
+    })
 
 
 if __name__ == "__main__":

@@ -36,6 +36,8 @@ const SUBTABS = [
   { id: 'compare',  label: 'Сравнить модели' },
   { id: 'ai',       label: 'AI советник + критик' },
   { id: 'optimize', label: '🎯 Оптимизация метода' },
+  { id: 'eta_calib', label: '🎯 Калибровка η_Al' },
+  { id: 'history',  label: '📋 История плавок' },
 ];
 
 const state = {
@@ -77,6 +79,45 @@ const state = {
     methodsLoaded: false,
     methodsLoading: false,  // PR 8 — concurrent-fetch dedup
     saving: false,
+  },
+  // PR 2 (ASIS-deox calibration) — heats history sub-tab. Reads
+  // /api/deox/heats* CRUD. Filters drive the GET list; ``formOpen`` is
+  // the «➕ Новая плавка» disclosure; ``editingId`` is the inline
+  // outcome-PATCH row (null = none open). Methods catalog is shared
+  // with the optimize sub-tab — reloaded if not already cached.
+  history: {
+    loaded: false,
+    loading: false,
+    error: null,
+    items: [],
+    total: 0,
+    nextBeforeId: null,
+    filters: { plant_id: '', method_id: '', has_outcome: '' },
+    plants: [],             // [{plant_id, count}]
+    formOpen: false,
+    formValues: null,       // lazy-init via defaultHeatForm()
+    creating: false,
+    editingId: null,
+    editValues: {
+      o_a_after_ppm: '',
+      al_residual_pct: '',
+      eta_al_effective: '',
+      quality_flag: '',
+    },
+    patching: false,
+  },
+  // PR 10 — «🎯 Калибровка η_Al» sub-tab. Lazy-loads the trained ML model
+  // status (GET /api/deox/eta-al-model/status) + the plant×method posteriors
+  // (GET /api/deox/calibrations) in parallel on first activation. ``running``
+  // tracks the in-flight POST /api/deox/calibrations/run so the «Запустить
+  // калибровку» button can show a spinner.
+  etaCalib: {
+    loaded: false,
+    loading: false,
+    error: null,
+    modelStatus: null,    // {model_present, r2_test, coverage_90_ci, ...}
+    calibrations: [],     // [{plant_id, method_id, ...}]
+    running: false,
   },
 };
 
@@ -188,6 +229,14 @@ function defaultOptimize() {
     // Block F — economics + thermo
     thermo_model_id: null,    // resolved from selectedModelId at submit time
     al_commodity_price_eur_per_kg: 2.40,
+    // Block G — multi-objective (PR 7). Backwards compat: 'cost' reproduces
+    // pre-PR-7 behavior. 'al_mass' picks min Al pure (carbon footprint).
+    // 'pareto' returns the non-dominated frontier with knee chosen.
+    objective: 'cost',
+    // Block H — η_Al prediction (PR 10). Default off → PR 7 behavior
+    // byte-identical. When on, requires plant_id.
+    enable_eta_prediction: false,
+    plant_id: '',
   };
 }
 
@@ -1367,6 +1416,40 @@ function renderOptimizeForm() {
         placeholder: 'если applicable' }),
   );
 
+  // ── Block G — Optimization objective (PR 7) ───────────────────────
+  // Radio triplet — cost / al_mass / pareto. Mutates ``v.objective`` on
+  // change so the next runOptimize() reads the latest selection.
+  // We keep the radio inputs ``data-field="objective"`` so an external
+  // scraper / e2e test can read the current selection.
+  const blockG = el('div', { class: 'deox-form-heading' },
+    'Блок G — Критерий оптимизации');
+  const makeObjectiveRadio = (value, label) => el('label',
+    { class: 'deox-ai-save-toggle' },
+    el('input', {
+      type: 'radio',
+      name: 'deox-optimize-objective',
+      'data-field': 'objective',
+      value,
+      ...(v.objective === value ? { checked: 'checked' } : {}),
+      onChange: (ev) => {
+        if (ev.target.checked) {
+          v.objective = value;
+        }
+      },
+    }),
+    el('span', {}, label),
+  );
+  const objectiveGroup = el('div', { class: 'deox-form-grid' },
+    makeObjectiveRadio('cost', 'Cost (€/heat) — default'),
+    makeObjectiveRadio('al_mass', 'Al pure (кг) — carbon footprint'),
+    makeObjectiveRadio('pareto', 'Pareto {Al × €} — ручной выбор'),
+  );
+  const objectiveNote = el('div', { class: 'deox-ai-subnote' },
+    'Cost — стандарт (минимум €/heat). Al pure — минимизация массы Al ' +
+    '(прокси CO₂-footprint и Al-инвентарь). Pareto — non-dominated frontier ' +
+    'с knee-точкой; выбирается лучший баланс между Al и cost, на графике ' +
+    'видна вся frontier для ручного выбора.');
+
   // ── Block F — Economics + thermo ──────────────────────────────────
   const blockF = el('div', { class: 'deox-form-heading' },
     'Блок F — Экономика и термодинамика');
@@ -1401,6 +1484,47 @@ function renderOptimizeForm() {
       { step: 0.10, min: 0, max: 20, decimals: 2 }),
   );
 
+  // ── Block H — η_Al prediction (PR 10) ─────────────────────────────
+  // Opt-in checkbox + plant_id text input. When enabled, the optimizer
+  // threads an EtaAlPredictor (plant Bayesian posterior + global ML) instead
+  // of literature η. plant_id is required in that mode (validated client- +
+  // server-side). Mutually exclusive with the Block D «Override η_Al».
+  const blockH = el('div', { class: 'deox-form-heading' },
+    'Блок H — ML-прогноз η_Al (опционально)');
+  const etaPredToggle = el('label', { class: 'deox-ai-save-toggle' },
+    el('input', {
+      type: 'checkbox',
+      'data-field': 'enable_eta_prediction',
+      ...(v.enable_eta_prediction ? { checked: 'checked' } : {}),
+      onChange: (ev) => {
+        v.enable_eta_prediction = !!ev.target.checked;
+        renderOptimizeForm();
+      },
+    }),
+    el('span', {}, 'Использовать ML-прогноз η_Al (plant posterior + глобальный ML) ' +
+      'вместо литературного η'),
+  );
+  const plantIdField = v.enable_eta_prediction
+    ? el('div', { class: 'deox-field' },
+        el('label', { class: 'deox-field-label', for: 'deox-opt-plant-id' },
+          'plant_id (обязателен для ML-прогноза)'),
+        el('input', {
+          type: 'text',
+          class: 'deox-input mono',
+          id: 'deox-opt-plant-id',
+          'data-field': 'plant_id',
+          value: v.plant_id || '',
+          placeholder: 'например, PLANT_A',
+        }),
+      )
+    : null;
+  const blockHNote = v.enable_eta_prediction
+    ? el('div', { class: 'deox-ai-subnote' },
+        'Калибровки по цехам управляются в табе «🎯 Калибровка η_Al». ' +
+        'Если у цеха нет posterior\'а или ML-модель не обучена — predictor ' +
+        'мягко деградирует к литературному η. Несовместимо с «Override η_Al».')
+    : null;
+
   // ── Action button ─────────────────────────────────────────────────
   const submitBtn = el('button', {
     class: 'btn primary',
@@ -1424,7 +1548,11 @@ function renderOptimizeForm() {
     blockD, methodCheckboxes, overrideToggle,
     ...(overrideField ? [overrideField] : []),
     blockE, gridE,
+    blockG, objectiveGroup, objectiveNote,
     blockF, gridF,
+    blockH, etaPredToggle,
+    ...(plantIdField ? [plantIdField] : []),
+    ...(blockHNote ? [blockHNote] : []),
     actions, subnote,
   );
 }
@@ -1563,6 +1691,38 @@ function readOptimizeForm(formRoot) {
     }
   }
 
+  // Block G — multi-objective (PR 7). Read the checked radio; if no radio
+  // is present (older HTML or hidden by future refactor) fall back to the
+  // form-state value (default 'cost').
+  const checkedObjective = formRoot.querySelector(
+    'input[data-field="objective"]:checked');
+  out.objective = checkedObjective ? checkedObjective.value : (v.objective || 'cost');
+
+  // Block H — η_Al prediction (PR 10). Only emit fields when enabled so the
+  // default (disabled) request is byte-identical to PR 7. Client-side guard:
+  // checkbox checked without plant_id raises before we POST.
+  const etaPredInp = formRoot.querySelector(
+    'input[data-field="enable_eta_prediction"]');
+  const etaPredEnabled = !!(etaPredInp && etaPredInp.checked);
+  let plantIdValue = '';
+  if (etaPredEnabled) {
+    const plantInp = formRoot.querySelector('input[data-field="plant_id"]');
+    plantIdValue = plantInp ? (plantInp.value || '').trim() : '';
+    if (plantIdValue === '') {
+      throw new Error(
+        'ML-прогноз η_Al требует plant_id — укажите цех или снимите галочку.',
+      );
+    }
+    if (out.user_override_eta_al != null) {
+      throw new Error(
+        'ML-прогноз η_Al несовместим с ручным «Override η_Al» — ' +
+        'оставьте только одно.',
+      );
+    }
+    out.enable_eta_prediction = true;
+    out.plant_id = plantIdValue;
+  }
+
   // Cache the parsed snapshot back into form values for re-render fidelity.
   // Use Block A keys + optional ones that we successfully parsed; the
   // toggle flags are preserved on the v object via the onChange handlers.
@@ -1593,9 +1753,132 @@ function readOptimizeForm(formRoot) {
     al_commodity_price_eur_per_kg:
       out.al_commodity_price_eur_per_kg
       ?? v.al_commodity_price_eur_per_kg,
+    objective: out.objective || v.objective || 'cost',
+    enable_eta_prediction: etaPredEnabled,
+    plant_id: etaPredEnabled ? plantIdValue : (v.plant_id || ''),
   };
 
   return out;
+}
+
+function renderInlineParetoScatter(container, frontier, chosenId) {
+  // PR 7 — inline SVG scatter of the Pareto frontier {al_pure_kg vs
+  // cost_per_heat_eur}. We don't reuse charts/pareto.js — that module is
+  // shaped around an entirely different domain (NSGA-II inverse design
+  // candidates). Inline SVG keeps the dependency surface tight.
+  //
+  // Layout: 400x250 px, 40 px padding for axis labels. Chosen point is
+  // rendered as a larger filled circle (#e63946) with a black stroke;
+  // non-chosen points are smaller dark-blue (#1d3557). Each <circle> has
+  // a <title> child for the hover tooltip — browser default behaviour.
+  const W = 400;
+  const H = 250;
+  const PAD = 40;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  const als = frontier.map((r) => r.al_pure_kg);
+  const costs = frontier.map((r) => r.cost_per_heat_eur);
+  const alMin = Math.min(...als);
+  const alMax = Math.max(...als);
+  const costMin = Math.min(...costs);
+  const costMax = Math.max(...costs);
+  // Guard against zero-range axes (degenerate single-point frontier
+  // already short-circuits above, but two identical points would still
+  // divide-by-zero without the 1e-9 floor).
+  const xScale = (a) => PAD + ((a - alMin) / Math.max(alMax - alMin, 1e-9))
+    * (W - 2 * PAD);
+  const yScale = (c) => (H - PAD) - ((c - costMin) / Math.max(costMax - costMin, 1e-9))
+    * (H - 2 * PAD);
+
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('width', String(W));
+  svg.setAttribute('height', String(H));
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.style.background = '#fafafa';
+  svg.style.border = '1px solid #ddd';
+  svg.style.borderRadius = '4px';
+
+  // X-axis baseline.
+  const xAxis = document.createElementNS(SVG_NS, 'line');
+  xAxis.setAttribute('x1', String(PAD));
+  xAxis.setAttribute('y1', String(H - PAD));
+  xAxis.setAttribute('x2', String(W - PAD));
+  xAxis.setAttribute('y2', String(H - PAD));
+  xAxis.setAttribute('stroke', '#333');
+  svg.appendChild(xAxis);
+  // Y-axis baseline.
+  const yAxis = document.createElementNS(SVG_NS, 'line');
+  yAxis.setAttribute('x1', String(PAD));
+  yAxis.setAttribute('y1', String(PAD));
+  yAxis.setAttribute('x2', String(PAD));
+  yAxis.setAttribute('y2', String(H - PAD));
+  yAxis.setAttribute('stroke', '#333');
+  svg.appendChild(yAxis);
+
+  // X-label.
+  const xLabel = document.createElementNS(SVG_NS, 'text');
+  xLabel.setAttribute('x', String(W / 2));
+  xLabel.setAttribute('y', String(H - 8));
+  xLabel.setAttribute('text-anchor', 'middle');
+  xLabel.setAttribute('font-size', '12');
+  xLabel.setAttribute('fill', '#333');
+  xLabel.textContent = 'Al pure, кг';
+  svg.appendChild(xLabel);
+  // Y-label (rotated -90°).
+  const yLabel = document.createElementNS(SVG_NS, 'text');
+  yLabel.setAttribute('x', '12');
+  yLabel.setAttribute('y', String(H / 2));
+  yLabel.setAttribute('text-anchor', 'middle');
+  yLabel.setAttribute('font-size', '12');
+  yLabel.setAttribute('fill', '#333');
+  yLabel.setAttribute('transform', `rotate(-90 12 ${H / 2})`);
+  yLabel.textContent = 'Cost, €/heat';
+  svg.appendChild(yLabel);
+
+  // Axis tick labels — min/max on each axis for orientation.
+  const tickAttr = (x, y, text, anchor = 'middle') => {
+    const t = document.createElementNS(SVG_NS, 'text');
+    t.setAttribute('x', String(x));
+    t.setAttribute('y', String(y));
+    t.setAttribute('text-anchor', anchor);
+    t.setAttribute('font-size', '10');
+    t.setAttribute('fill', '#666');
+    t.textContent = text;
+    svg.appendChild(t);
+  };
+  tickAttr(PAD, H - PAD + 14, formatNumber(alMin, 0), 'start');
+  tickAttr(W - PAD, H - PAD + 14, formatNumber(alMax, 0), 'end');
+  tickAttr(PAD - 4, H - PAD + 2, formatNumber(costMin, 0), 'end');
+  tickAttr(PAD - 4, PAD + 4, formatNumber(costMax, 0), 'end');
+
+  // Points — chosen rendered last so it sits on top.
+  const sortedForRender = [...frontier].sort((a, b) => {
+    if (a.method_id === chosenId) return 1;
+    if (b.method_id === chosenId) return -1;
+    return 0;
+  });
+  for (const r of sortedForRender) {
+    const cx = xScale(r.al_pure_kg);
+    const cy = yScale(r.cost_per_heat_eur);
+    const isChosen = r.method_id === chosenId;
+    const circle = document.createElementNS(SVG_NS, 'circle');
+    circle.setAttribute('cx', String(cx));
+    circle.setAttribute('cy', String(cy));
+    circle.setAttribute('r', isChosen ? '8' : '5');
+    circle.setAttribute('fill', isChosen ? '#e63946' : '#1d3557');
+    if (isChosen) {
+      circle.setAttribute('stroke', '#000');
+      circle.setAttribute('stroke-width', '2');
+    }
+    const title = document.createElementNS(SVG_NS, 'title');
+    title.textContent =
+      `${r.method_name}: ${formatNumber(r.al_pure_kg, 1)} кг, `
+      + `${formatNumber(r.cost_per_heat_eur, 0)} €/heat`;
+    circle.appendChild(title);
+    svg.appendChild(circle);
+  }
+
+  container.appendChild(svg);
 }
 
 function renderOptimizeResult() {
@@ -1723,6 +2006,32 @@ function renderOptimizeResult() {
     ));
   }
 
+  // ── Pareto scatter (PR 7) ─────────────────────────────────────────
+  // Only render the SVG when objective === "pareto" and the frontier has
+  // ≥ 1 point. For cost/al_mass the backend returns pareto_frontier=[]
+  // so this block stays inert and the existing pareto_table is the only
+  // visualisation.
+  if (
+    data.objective === 'pareto'
+    && Array.isArray(data.pareto_frontier)
+    && data.pareto_frontier.length >= 1
+  ) {
+    const scatterContainer = el('div',
+      { class: 'pareto-scatter-container' });
+    renderInlineParetoScatter(
+      scatterContainer,
+      data.pareto_frontier,
+      data.chosen_method_id,
+    );
+    blocks.push(el('div', { class: 'deox-ai-block' },
+      el('strong', {}, 'Pareto-frontier {Al pure × €/heat}:'),
+      el('div', { class: 'deox-ai-subnote' },
+        '🔴 — knee-точка (выбранный метод). Наведите курсор на точку — ' +
+        'tooltip покажет имя метода, Al pure и cost.'),
+      scatterContainer,
+    ));
+  }
+
   // ── Pattern warnings (re-use existing renderer) ───────────────────
   const wBlock = renderWarnings(data.pattern_warnings);
   if (wBlock) blocks.push(wBlock);
@@ -1811,6 +2120,864 @@ async function runOptimizeSave() {
   } finally {
     state.optimize.saving = false;
     renderOptimizeResult();
+  }
+}
+
+// ──────────────────── History sub-tab (PR 2 — ASIS-deox calibration) ────────────────────
+//
+// Heats CRUD UI:
+//   - Filter bar (plant / method / has_outcome)
+//   - «➕ Новая плавка» disclosure form (4 required + collapsible optional)
+//   - Table of heats with inline outcome-PATCH and DELETE actions
+//   - «Загрузить ещё» button for keyset pagination
+//
+// All endpoints are under /api/deox/heats* — see app/api/routers/heats.py.
+// We reuse the existing optimize-sub-tab methods catalog (GET /api/deox/methods)
+// for the method dropdown so the user sees the same list in both places.
+
+function defaultHeatForm() {
+  // POST body schema for /api/deox/heats. Required: source / plant_id /
+  // steel_mass_ton / o_a_initial_ppm. Optionals start as '' (empty input)
+  // so readHeatForm drops them. ``source='manual'`` is hard-coded — the
+  // ETL paths (excel_etl, csv_bulk, synthetic) write directly to the DB
+  // via PR 3-4 scripts, not through this form.
+  return {
+    source: 'manual',
+    plant_id: '',
+    heat_id: '',
+    steel_class_id: '',
+    steel_mass_ton: '',
+    o_a_initial_ppm: '',
+    o_a_after_ppm: '',
+    t_tap_c: '',
+    t_lf_arrival_c: '',
+    t_al_addition_c: '',
+    al_added_kg: '',
+    al_residual_pct: '',
+    slag_mass_kg: '',
+    carry_over_slag_kg_per_t: '',
+    slag_feo_pct: '',
+    slag_mno_pct: '',
+    slag_sio2_pct: '',
+    slag_cao_pct: '',
+    slag_mgo_pct: '',
+    slag_al2o3_pct: '',
+    c_pct: '',
+    mn_pct: '',
+    si_pct: '',
+    s_pct: '',
+    p_pct: '',
+    method_id: '',
+    addition_timing: '',
+    carrier_gas: '',
+    co_deox_fesi_kg: '',
+    dt_to_al_min: '',
+    t_drying_c: '',
+    ar_stir_nm3: '',
+    vacuum_treatment: '',
+    refractory_heat_count: '',
+    eta_al_effective: '',
+    quality_flag: '',
+    notes: '',
+  };
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatHeatTs(iso) {
+  // Render YYYY-MM-DD HH:MM in local TZ (the iso string carries UTC).
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n) => String(n).padStart(2, '0');
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}`
+    );
+  } catch {
+    return iso;
+  }
+}
+
+async function loadHistoryDataOnce() {
+  // Idempotent (loaded flag short-circuits) but a manual refresh path
+  // calls loadHistoryList directly to re-fetch list without methods.
+  if (state.history.loading) return;
+  state.history.loading = true;
+  state.history.error = null;
+  try {
+    // Fire methods catalog load if not already cached — share with optimize tab.
+    const methodsPromise = state.optimize.methodsLoaded
+      ? Promise.resolve()
+      : loadOptimizeMethods();
+    const [listResp, plantsResp] = await Promise.all([
+      apiFetch(buildHeatsListUrl()),
+      apiFetch('/api/deox/heats/plants'),
+      methodsPromise,
+    ]);
+    state.history.items = Array.isArray(listResp.items) ? listResp.items : [];
+    state.history.total = Number(listResp.total || 0);
+    state.history.nextBeforeId = listResp.next_before_id ?? null;
+    state.history.plants = Array.isArray(plantsResp.items) ? plantsResp.items : [];
+    state.history.loaded = true;
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    state.history.error = `Не удалось загрузить историю плавок: ${detail}`;
+  } finally {
+    state.history.loading = false;
+  }
+}
+
+function buildHeatsListUrl(opts = {}) {
+  const f = state.history.filters;
+  const params = new URLSearchParams();
+  params.set('limit', '100');
+  if (f.plant_id) params.set('plant_id', f.plant_id);
+  if (f.method_id) params.set('method_id', f.method_id);
+  if (f.has_outcome === 'true' || f.has_outcome === 'false') {
+    params.set('has_outcome', f.has_outcome);
+  }
+  if (opts.before_id != null) params.set('before_id', String(opts.before_id));
+  return `/api/deox/heats?${params.toString()}`;
+}
+
+async function loadHistoryList({ append = false } = {}) {
+  if (state.history.loading) return;
+  state.history.loading = true;
+  state.history.error = null;
+  try {
+    const url = buildHeatsListUrl(
+      append && state.history.nextBeforeId != null
+        ? { before_id: state.history.nextBeforeId }
+        : {},
+    );
+    const resp = await apiFetch(url);
+    const items = Array.isArray(resp.items) ? resp.items : [];
+    state.history.items = append ? state.history.items.concat(items) : items;
+    state.history.total = Number(resp.total || 0);
+    state.history.nextBeforeId = resp.next_before_id ?? null;
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    state.history.error = `Ошибка загрузки списка: ${detail}`;
+  } finally {
+    state.history.loading = false;
+    renderHistorySubtab();
+  }
+}
+
+async function reloadPlantsList() {
+  try {
+    const resp = await apiFetch('/api/deox/heats/plants');
+    state.history.plants = Array.isArray(resp.items) ? resp.items : [];
+  } catch {
+    // Non-fatal — dropdown stays stale until next reload.
+  }
+}
+
+function renderHistorySubtab() {
+  // The history sub-tab puts everything into formContainer + resultContainer
+  // because we already have those two containers from the skeleton. We use
+  // formContainer for filters + new-heat form, and resultContainer for the table.
+  if (!elements) return;
+
+  // ── Filters + Add button ─────────────────────────────────────────
+  const filtersBar = renderHistoryFilters();
+  const addToggle = el('button', {
+    class: 'btn',
+    type: 'button',
+    onClick: () => {
+      state.history.formOpen = !state.history.formOpen;
+      if (state.history.formOpen && !state.history.formValues) {
+        state.history.formValues = defaultHeatForm();
+      }
+      renderHistorySubtab();
+    },
+  }, state.history.formOpen ? '▾ Скрыть форму' : '➕ Новая плавка');
+  const reloadBtn = el('button', {
+    class: 'btn',
+    type: 'button',
+    onClick: () => loadHistoryList({ append: false }),
+  }, state.history.loading ? '⏳ Загрузка…' : '🔄 Обновить');
+  const toolbar = el(
+    'div',
+    { class: 'deox-actions', style: { marginTop: '12px', flexWrap: 'wrap' } },
+    addToggle,
+    reloadBtn,
+  );
+
+  // ── Optional create form ─────────────────────────────────────────
+  const formBlock = state.history.formOpen ? renderNewHeatForm() : null;
+
+  const parts = [filtersBar, toolbar];
+  if (formBlock) parts.push(formBlock);
+  elements.formContainer.replaceChildren(...parts);
+
+  // ── Table + load-more ────────────────────────────────────────────
+  elements.resultContainer.replaceChildren(renderHistoryTable());
+}
+
+function renderHistoryFilters() {
+  const f = state.history.filters;
+  const plantSelect = el('select', {
+    class: 'deox-select',
+    'data-field': 'filter_plant_id',
+    onChange: (ev) => {
+      state.history.filters.plant_id = ev.target.value || '';
+      loadHistoryList({ append: false });
+    },
+  },
+    el('option', { value: '' }, '(все площадки)'),
+    ...state.history.plants.map((p) => {
+      const opt = el('option', { value: p.plant_id },
+        `${p.plant_id} (${p.count})`);
+      if (p.plant_id === f.plant_id) opt.selected = true;
+      return opt;
+    }),
+  );
+  const methodsItems = Array.isArray(state.optimize.methods)
+    ? state.optimize.methods : [];
+  const methodSelect = el('select', {
+    class: 'deox-select',
+    'data-field': 'filter_method_id',
+    onChange: (ev) => {
+      state.history.filters.method_id = ev.target.value || '';
+      loadHistoryList({ append: false });
+    },
+  },
+    el('option', { value: '' }, '(все методы)'),
+    ...methodsItems.map((m) => {
+      const opt = el('option', { value: m.id }, m.name || m.id);
+      if (m.id === f.method_id) opt.selected = true;
+      return opt;
+    }),
+  );
+  const outcomeSelect = el('select', {
+    class: 'deox-select',
+    'data-field': 'filter_has_outcome',
+    onChange: (ev) => {
+      state.history.filters.has_outcome = ev.target.value || '';
+      loadHistoryList({ append: false });
+    },
+  },
+    el('option', { value: '' }, '(все статусы)'),
+    (() => {
+      const o = el('option', { value: 'true' }, 'С outcome');
+      if (f.has_outcome === 'true') o.selected = true;
+      return o;
+    })(),
+    (() => {
+      const o = el('option', { value: 'false' }, 'In-progress');
+      if (f.has_outcome === 'false') o.selected = true;
+      return o;
+    })(),
+  );
+
+  const filterField = (label, ctrl) => el('div', { class: 'deox-context-cell' },
+    el('span', { class: 'deox-context-label' }, label),
+    ctrl,
+  );
+
+  return el('div', { class: 'deox-context', style: { marginTop: '12px' } },
+    filterField('Площадка', plantSelect),
+    filterField('Метод подачи Al', methodSelect),
+    filterField('Outcome', outcomeSelect),
+  );
+}
+
+function renderNewHeatForm() {
+  const v = state.history.formValues || defaultHeatForm();
+  state.history.formValues = v;
+
+  const heading = el('div', { class: 'deox-form-heading' },
+    'Создание новой плавки (manual entry)');
+
+  // Required fields up top — must be set or POST will 422.
+  const requiredGrid = el(
+    'div',
+    { class: 'deox-form-grid' },
+    buildHeatField('plant_id', 'Площадка *', v.plant_id, { kind: 'text', placeholder: 'ASIS_BOF' }),
+    buildHeatField('steel_mass_ton', 'Масса стали, т *', v.steel_mass_ton,
+      { kind: 'number', step: 10, min: 1, max: 500 }),
+    buildHeatField('o_a_initial_ppm', '[O]_a начальный, ppm *', v.o_a_initial_ppm,
+      { kind: 'number', step: 10, min: 0, max: 2000 }),
+    buildHeatField('heat_id', 'Heat ID (опц.)', v.heat_id, { kind: 'text', placeholder: 'H-12345' }),
+  );
+
+  // Disclosure for optional fields.
+  const optionalToggleId = 'deox-heat-optional-toggle';
+  const optionalChecked = !!v.__optional_open;
+  const optionalToggle = el('label', { class: 'deox-ai-save-toggle' },
+    el('input', {
+      type: 'checkbox',
+      id: optionalToggleId,
+      ...(optionalChecked ? { checked: 'checked' } : {}),
+      onChange: (ev) => {
+        v.__optional_open = !!ev.target.checked;
+        renderHistorySubtab();
+      },
+    }),
+    el('span', {}, 'Показать дополнительные поля (slag / composition / method / outcome)'),
+  );
+
+  const optionalBlock = optionalChecked
+    ? renderOptionalHeatFields(v)
+    : null;
+
+  const submitBtn = el('button', {
+    class: 'btn primary',
+    type: 'button',
+    ...(state.history.creating ? { disabled: 'disabled' } : {}),
+    onClick: () => createHeatHandler(),
+  }, state.history.creating ? 'Сохранение…' : '💾 Создать плавку');
+  const cancelBtn = el('button', {
+    class: 'btn',
+    type: 'button',
+    onClick: () => {
+      state.history.formOpen = false;
+      state.history.formValues = null;
+      renderHistorySubtab();
+    },
+  }, 'Отменить');
+  const actions = el('div', { class: 'deox-actions' }, submitBtn, cancelBtn);
+
+  const parts = [heading, requiredGrid, optionalToggle];
+  if (optionalBlock) parts.push(optionalBlock);
+  parts.push(actions);
+  return el('div', { class: 'deox-form-panel' }, ...parts);
+}
+
+function renderOptionalHeatFields(v) {
+  const methodsItems = Array.isArray(state.optimize.methods)
+    ? state.optimize.methods : [];
+
+  // Slag block.
+  const slag = el('div', { class: 'deox-form-grid' },
+    buildHeatField('slag_mass_kg', 'M_slag, кг', v.slag_mass_kg,
+      { kind: 'number', step: 100, min: 0, max: 10000 }),
+    buildHeatField('slag_feo_pct', '%FeO', v.slag_feo_pct,
+      { kind: 'number', step: 1, min: 0, max: 50 }),
+    buildHeatField('slag_mno_pct', '%MnO', v.slag_mno_pct,
+      { kind: 'number', step: 0.5, min: 0, max: 20 }),
+    buildHeatField('slag_sio2_pct', '%SiO₂', v.slag_sio2_pct,
+      { kind: 'number', step: 0.5, min: 0, max: 30 }),
+    buildHeatField('slag_cao_pct', '%CaO', v.slag_cao_pct,
+      { kind: 'number', step: 1, min: 0, max: 70 }),
+    buildHeatField('slag_mgo_pct', '%MgO', v.slag_mgo_pct,
+      { kind: 'number', step: 0.5, min: 0, max: 25 }),
+    buildHeatField('slag_al2o3_pct', '%Al₂O₃', v.slag_al2o3_pct,
+      { kind: 'number', step: 1, min: 0, max: 50 }),
+    buildHeatField('carry_over_slag_kg_per_t', 'Шлак carry-over, kg/t',
+      v.carry_over_slag_kg_per_t,
+      { kind: 'number', step: 0.5, min: 0, max: 50 }),
+  );
+
+  // Composition.
+  const comp = el('div', { class: 'deox-form-grid' },
+    buildHeatField('c_pct', '%C', v.c_pct,
+      { kind: 'number', step: 0.01, min: 0, max: 1.5, decimals: 3 }),
+    buildHeatField('mn_pct', '%Mn', v.mn_pct,
+      { kind: 'number', step: 0.1, min: 0, max: 3 }),
+    buildHeatField('si_pct', '%Si', v.si_pct,
+      { kind: 'number', step: 0.05, min: 0, max: 2.5 }),
+    buildHeatField('s_pct', '%S', v.s_pct,
+      { kind: 'number', step: 0.001, min: 0, max: 0.05, decimals: 4 }),
+    buildHeatField('p_pct', '%P', v.p_pct,
+      { kind: 'number', step: 0.001, min: 0, max: 0.05, decimals: 4 }),
+    buildHeatField('steel_class_id', 'Класс стали', v.steel_class_id,
+      { kind: 'text', placeholder: 'pipe_hsla' }),
+  );
+
+  // Temperatures + Al.
+  const tempsAndAl = el('div', { class: 'deox-form-grid' },
+    buildHeatField('t_tap_c', 'T_tap, °C', v.t_tap_c,
+      { kind: 'number', step: 5, min: 1400, max: 1700 }),
+    buildHeatField('t_lf_arrival_c', 'T_LF, °C', v.t_lf_arrival_c,
+      { kind: 'number', step: 5, min: 1400, max: 1700 }),
+    buildHeatField('t_al_addition_c', 'T_Al, °C', v.t_al_addition_c,
+      { kind: 'number', step: 5, min: 1400, max: 1700 }),
+    buildHeatField('al_added_kg', 'Al подано, кг', v.al_added_kg,
+      { kind: 'number', step: 10, min: 0, max: 5000 }),
+    buildHeatField('al_residual_pct', '[Al]_остаточный, %', v.al_residual_pct,
+      { kind: 'number', step: 0.001, min: 0, max: 0.5, decimals: 4 }),
+    buildHeatField('co_deox_fesi_kg', 'FeSi (co-deox), кг', v.co_deox_fesi_kg,
+      { kind: 'number', step: 10, min: 0, max: 5000 }),
+    buildHeatField('dt_to_al_min', 'Δt до Al, мин', v.dt_to_al_min,
+      { kind: 'number', step: 1, min: 0, max: 120 }),
+    buildHeatField('t_drying_c', 'T сушки, °C', v.t_drying_c,
+      { kind: 'number', step: 10, min: 0, max: 600 }),
+    buildHeatField('ar_stir_nm3', 'Ar stirring, Nm³', v.ar_stir_nm3,
+      { kind: 'number', step: 1, min: 0, max: 100 }),
+    buildHeatField('refractory_heat_count', 'Refractory N плавок',
+      v.refractory_heat_count,
+      { kind: 'number', step: 1, min: 0, max: 500, integer: true }),
+  );
+
+  // Method + enums.
+  const methodOpts = [
+    el('option', { value: '' }, '(не указан)'),
+    ...methodsItems.map((m) => {
+      const opt = el('option', { value: m.id }, m.name || m.id);
+      if (m.id === v.method_id) opt.selected = true;
+      return opt;
+    }),
+  ];
+  const methodSelect = el('select', {
+    class: 'deox-select',
+    'data-field': 'method_id',
+  }, ...methodOpts);
+  const methodField = el('div', { class: 'deox-field' },
+    el('label', { class: 'deox-field-label' }, 'Метод подачи Al'),
+    methodSelect,
+  );
+
+  const enumField = (key, label, options, current) => {
+    const opts = [el('option', { value: '' }, '(не указано)'),
+      ...options.map((v_) => {
+        const opt = el('option', { value: v_ }, v_);
+        if (v_ === current) opt.selected = true;
+        return opt;
+      })];
+    return el('div', { class: 'deox-field' },
+      el('label', { class: 'deox-field-label' }, label),
+      el('select', { class: 'deox-select', 'data-field': key }, ...opts),
+    );
+  };
+
+  const methodAndEnums = el('div', { class: 'deox-form-grid' },
+    methodField,
+    enumField('addition_timing', 'Addition timing',
+      ['in_stream', 'trim_after_lf_arrival', 'split'], v.addition_timing),
+    enumField('carrier_gas', 'Carrier gas',
+      ['none', 'Ar', 'N2'], v.carrier_gas),
+    enumField('vacuum_treatment', 'Vacuum',
+      ['none', 'VD', 'RH'], v.vacuum_treatment),
+  );
+
+  // Outcome fields (optional at POST — usually set later via PATCH).
+  const outcome = el('div', { class: 'deox-form-grid' },
+    buildHeatField('o_a_after_ppm', '[O]_a после, ppm', v.o_a_after_ppm,
+      { kind: 'number', step: 1, min: 0, max: 2000 }),
+    buildHeatField('eta_al_effective', 'η_Al эффективная', v.eta_al_effective,
+      { kind: 'number', step: 0.01, min: 0, max: 1.5, decimals: 3 }),
+    enumField('quality_flag', 'Quality flag',
+      ['accept', 'out_of_spec', 'unknown'], v.quality_flag),
+  );
+
+  const notesField = el('div', { class: 'deox-field', style: { gridColumn: '1 / -1' } },
+    el('label', { class: 'deox-field-label' }, 'Notes (свободный текст)'),
+    el('textarea', {
+      class: 'deox-input',
+      'data-field': 'notes',
+      rows: '2',
+      maxlength: '4000',
+      style: { width: '100%' },
+    }, v.notes || ''),
+  );
+
+  return el('div', { style: { marginTop: '8px' } },
+    el('div', { class: 'deox-form-heading' }, 'Шлак (опц.)'), slag,
+    el('div', { class: 'deox-form-heading' }, 'Состав (опц.)'), comp,
+    el('div', { class: 'deox-form-heading' }, 'Температуры / Al / процесс (опц.)'), tempsAndAl,
+    el('div', { class: 'deox-form-heading' }, 'Метод и enum-поля (опц.)'), methodAndEnums,
+    el('div', { class: 'deox-form-heading' }, 'Outcome (можно ввести позже через PATCH)'), outcome,
+    notesField,
+  );
+}
+
+function buildHeatField(key, label, value, opts = {}) {
+  const { kind = 'number', step = 1, min, max, decimals,
+    placeholder, integer = false } = opts;
+  const id = `deox-heat-field-${key}`;
+  const display = value === '' || value == null
+    ? ''
+    : (kind === 'text' ? String(value)
+      : decimals != null ? Number(value).toFixed(decimals) : String(value));
+  const input = el('input', {
+    type: kind === 'text' ? 'text' : 'number',
+    class: 'deox-input mono',
+    id,
+    value: display,
+    ...(kind === 'number'
+      ? { step: integer ? '1' : String(step) }
+      : {}),
+    'data-field': key,
+    ...(min != null ? { min: String(min) } : {}),
+    ...(max != null ? { max: String(max) } : {}),
+    ...(placeholder ? { placeholder } : {}),
+  });
+  return el('div', { class: 'deox-field' },
+    el('label', { class: 'deox-field-label', for: id }, label),
+    input,
+  );
+}
+
+function readNewHeatForm(formRoot) {
+  // Build POST /api/deox/heats body. Empty fields are dropped (backend
+  // treats absence = None). Required fields throw if blank.
+  const v = state.history.formValues || defaultHeatForm();
+  const out = { source: 'manual' };
+
+  const readText = (key, { required = false } = {}) => {
+    const inp = formRoot.querySelector(`[data-field="${key}"]`);
+    if (!inp) return null;
+    const val = (inp.value || '').trim();
+    if (val === '') {
+      if (required) throw new Error(`Поле «${key}» обязательно`);
+      return null;
+    }
+    return val;
+  };
+  const readNumber = (key, { required = false, integer = false } = {}) => {
+    const inp = formRoot.querySelector(`[data-field="${key}"]`);
+    if (!inp) return null;
+    const raw = (inp.value || '').trim();
+    if (raw === '') {
+      if (required) throw new Error(`Поле «${key}» обязательно`);
+      return null;
+    }
+    const val = integer ? parseInt(raw, 10) : parseFloat(raw);
+    if (Number.isNaN(val)) {
+      throw new Error(`Поле «${key}» содержит некорректное значение`);
+    }
+    return val;
+  };
+
+  // Required.
+  out.plant_id = readText('plant_id', { required: true });
+  out.steel_mass_ton = readNumber('steel_mass_ton', { required: true });
+  out.o_a_initial_ppm = readNumber('o_a_initial_ppm', { required: true });
+
+  // Optional text.
+  for (const k of ['heat_id', 'steel_class_id', 'notes']) {
+    const val = readText(k);
+    if (val !== null) out[k] = val;
+  }
+  // Optional enums (also text inputs via select).
+  for (const k of [
+    'method_id', 'addition_timing', 'carrier_gas',
+    'vacuum_treatment', 'quality_flag',
+  ]) {
+    const val = readText(k);
+    if (val !== null) out[k] = val;
+  }
+  // Optional numbers.
+  const numericKeys = [
+    't_tap_c', 't_lf_arrival_c', 't_al_addition_c',
+    'al_added_kg', 'al_residual_pct',
+    'slag_mass_kg', 'carry_over_slag_kg_per_t',
+    'slag_feo_pct', 'slag_mno_pct', 'slag_sio2_pct',
+    'slag_cao_pct', 'slag_mgo_pct', 'slag_al2o3_pct',
+    'c_pct', 'mn_pct', 'si_pct', 's_pct', 'p_pct',
+    'co_deox_fesi_kg', 'dt_to_al_min', 't_drying_c',
+    'ar_stir_nm3',
+    'eta_al_effective', 'o_a_after_ppm',
+  ];
+  for (const k of numericKeys) {
+    const val = readNumber(k);
+    if (val !== null) out[k] = val;
+  }
+  const refractory = readNumber('refractory_heat_count', { integer: true });
+  if (refractory !== null) out.refractory_heat_count = refractory;
+
+  // Cache the parsed snapshot back so re-render keeps user input visible.
+  state.history.formValues = { ...v, ...out };
+  return out;
+}
+
+async function createHeatHandler() {
+  if (state.history.creating) return;
+  if (!elements) return;
+  // The form is inside formContainer.
+  const formRoot = elements.formContainer;
+  let body;
+  try {
+    body = readNewHeatForm(formRoot);
+  } catch (err) {
+    showError(err.message || String(err));
+    return;
+  }
+  clearError();
+  state.history.creating = true;
+  renderHistorySubtab();
+  try {
+    const resp = await apiFetch('/api/deox/heats', { method: 'POST', body });
+    // Prepend the new record to the in-memory list so the operator
+    // sees it without an extra round-trip.
+    if (resp && resp.heat) {
+      state.history.items = [resp.heat, ...state.history.items];
+      state.history.total += 1;
+    }
+    state.history.formOpen = false;
+    state.history.formValues = null;
+    showInfo(`Плавка #${resp && resp.id} создана.`);
+    // Refresh plants dropdown async (a new plant_id may have appeared).
+    reloadPlantsList();
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    showError(`Ошибка создания плавки: ${detail}`);
+  } finally {
+    state.history.creating = false;
+    renderHistorySubtab();
+  }
+}
+
+function renderHistoryTable() {
+  const items = state.history.items;
+  if (state.history.error) {
+    return el('div', { class: 'deox-warnings' },
+      el('div', { class: 'deox-warning HIGH' }, state.history.error));
+  }
+  if (state.history.loading && items.length === 0) {
+    return el('div', { class: 'deox-result' },
+      el('div', { class: 'deox-result-sub' }, 'Загружаю историю плавок…'));
+  }
+  if (!items || items.length === 0) {
+    return el('div', { class: 'deox-result' },
+      el('div', { class: 'deox-result-sub' },
+        'Пока ни одной плавки. Нажмите «➕ Новая плавка» чтобы добавить первую.'));
+  }
+
+  const head = el('thead', {},
+    el('tr', {},
+      el('th', {}, 'ID'),
+      el('th', {}, 'Создано'),
+      el('th', {}, 'Площадка'),
+      el('th', {}, 'Heat ID'),
+      el('th', {}, 'Масса, т'),
+      el('th', {}, '[O]_a init→after, ppm'),
+      el('th', {}, 'Метод'),
+      el('th', {}, 'η_Al'),
+      el('th', {}, 'Quality'),
+      el('th', {}, 'Действия'),
+    ),
+  );
+  const rows = [];
+  for (const it of items) {
+    rows.push(renderHistoryRow(it));
+    if (state.history.editingId === it.id) {
+      rows.push(renderHistoryEditRow(it));
+    }
+  }
+  const table = el('table', { class: 'deox-compare-table' },
+    head,
+    el('tbody', {}, ...rows),
+  );
+
+  // Pagination + summary.
+  const summary = el('div', { class: 'deox-ai-subnote' },
+    `Показано ${items.length} из ${state.history.total} плавок. ` +
+    (state.history.nextBeforeId != null
+      ? 'Доступна следующая страница.'
+      : 'Конец списка.'));
+
+  const loadMoreBtn = state.history.nextBeforeId != null
+    ? el('button', {
+        class: 'btn',
+        type: 'button',
+        ...(state.history.loading ? { disabled: 'disabled' } : {}),
+        onClick: () => loadHistoryList({ append: true }),
+      }, state.history.loading ? 'Загружаю…' : 'Загрузить ещё 100')
+    : null;
+  const actions = loadMoreBtn
+    ? el('div', { class: 'deox-actions' }, loadMoreBtn)
+    : null;
+
+  const parts = [
+    el('div', { class: 'deox-ai-block' },
+      el('strong', {}, `История плавок (${state.history.total} всего)`)),
+    table, summary,
+  ];
+  if (actions) parts.push(actions);
+  return el('div', { class: 'deox-result' }, ...parts);
+}
+
+function renderHistoryRow(it) {
+  const isEditing = state.history.editingId === it.id;
+  const oA = `${it.o_a_initial_ppm}→${it.o_a_after_ppm ?? '?'}`;
+  const editBtn = el('button', {
+    class: 'btn',
+    type: 'button',
+    style: { padding: '4px 8px' },
+    onClick: () => openEditRow(it),
+  }, isEditing ? '× Отменить' : '✎ Outcome');
+  const deleteBtn = el('button', {
+    class: 'btn',
+    type: 'button',
+    style: { padding: '4px 8px', marginLeft: '4px' },
+    onClick: () => deleteHeatHandler(it.id),
+  }, '🗑');
+  return el('tr', {},
+    el('td', { class: 'mono' }, String(it.id)),
+    el('td', { class: 'mono' }, formatHeatTs(it.created_at)),
+    el('td', {}, it.plant_id || '—'),
+    el('td', { class: 'mono' }, it.heat_id || '—'),
+    el('td', {}, formatNumber(it.steel_mass_ton, 0)),
+    el('td', { class: 'mono' }, oA),
+    el('td', {}, it.method_id || '—'),
+    el('td', { class: 'mono' }, it.eta_al_effective != null
+      ? formatNumber(it.eta_al_effective, 3) : '—'),
+    el('td', {}, it.quality_flag || '—'),
+    el('td', {}, editBtn, deleteBtn),
+  );
+}
+
+function openEditRow(it) {
+  if (state.history.editingId === it.id) {
+    state.history.editingId = null;
+  } else {
+    state.history.editingId = it.id;
+    state.history.editValues = {
+      o_a_after_ppm: it.o_a_after_ppm ?? '',
+      al_residual_pct: it.al_residual_pct ?? '',
+      eta_al_effective: it.eta_al_effective ?? '',
+      quality_flag: it.quality_flag ?? '',
+    };
+  }
+  renderHistorySubtab();
+}
+
+function renderHistoryEditRow(it) {
+  const v = state.history.editValues;
+  const input = (key, opts = {}) => {
+    const { step = 1, min, max } = opts;
+    return el('input', {
+      type: 'number',
+      class: 'deox-input mono',
+      'data-edit-field': key,
+      value: v[key] === '' || v[key] == null ? '' : String(v[key]),
+      step: String(step),
+      ...(min != null ? { min: String(min) } : {}),
+      ...(max != null ? { max: String(max) } : {}),
+      style: { width: '90px' },
+    });
+  };
+  const qfOpts = [
+    el('option', { value: '' }, '(не менять)'),
+    ...['accept', 'out_of_spec', 'unknown'].map((qf) => {
+      const opt = el('option', { value: qf }, qf);
+      if (qf === v.quality_flag) opt.selected = true;
+      return opt;
+    }),
+  ];
+  const qfSelect = el('select', {
+    class: 'deox-select',
+    'data-edit-field': 'quality_flag',
+    style: { width: '120px' },
+  }, ...qfOpts);
+
+  const saveBtn = el('button', {
+    class: 'btn primary',
+    type: 'button',
+    style: { padding: '4px 10px' },
+    ...(state.history.patching ? { disabled: 'disabled' } : {}),
+    onClick: () => patchHeatOutcomeHandler(it.id),
+  }, state.history.patching ? 'Сохраняю…' : '💾 Записать outcome');
+
+  const editCell = el('td', { colspan: '10', style: { background: 'rgba(0,0,0,0.04)' } },
+    el('div', { class: 'deox-form-grid', style: { padding: '8px' } },
+      el('div', { class: 'deox-field' },
+        el('label', { class: 'deox-field-label' }, '[O]_a после, ppm'),
+        input('o_a_after_ppm', { step: 1, min: 0, max: 2000 })),
+      el('div', { class: 'deox-field' },
+        el('label', { class: 'deox-field-label' }, '[Al]_residual, %'),
+        input('al_residual_pct', { step: 0.001, min: 0, max: 0.5 })),
+      el('div', { class: 'deox-field' },
+        el('label', { class: 'deox-field-label' }, 'η_Al эффективная'),
+        input('eta_al_effective', { step: 0.01, min: 0, max: 1.5 })),
+      el('div', { class: 'deox-field' },
+        el('label', { class: 'deox-field-label' }, 'Quality flag'),
+        qfSelect),
+      el('div', { class: 'deox-actions', style: { gridColumn: '1 / -1' } }, saveBtn),
+    ),
+  );
+  return el('tr', {}, editCell);
+}
+
+async function patchHeatOutcomeHandler(heatId) {
+  if (state.history.patching) return;
+  const body = {};
+  const root = elements && elements.resultContainer;
+  if (!root) return;
+  const fields = ['o_a_after_ppm', 'al_residual_pct', 'eta_al_effective'];
+  for (const k of fields) {
+    const inp = root.querySelector(`[data-edit-field="${k}"]`);
+    if (!inp) continue;
+    const raw = (inp.value || '').trim();
+    if (raw === '') continue;
+    const val = parseFloat(raw);
+    if (Number.isNaN(val)) {
+      showError(`Поле «${k}» содержит некорректное значение`);
+      return;
+    }
+    body[k] = val;
+  }
+  const qfSel = root.querySelector('[data-edit-field="quality_flag"]');
+  if (qfSel && qfSel.value) body.quality_flag = qfSel.value;
+
+  if (Object.keys(body).length === 0) {
+    showError('Заполните хотя бы одно поле outcome');
+    return;
+  }
+  clearError();
+  state.history.patching = true;
+  renderHistorySubtab();
+  try {
+    const resp = await apiFetch(
+      `/api/deox/heats/${encodeURIComponent(heatId)}`,
+      { method: 'PATCH', body },
+    );
+    // Replace the row in state.items in-place.
+    if (resp && resp.heat) {
+      state.history.items = state.history.items.map(
+        (it) => it.id === heatId ? resp.heat : it,
+      );
+    }
+    state.history.editingId = null;
+    showInfo(
+      `Outcome обновлён для плавки #${heatId}. ` +
+      `Decision Log: id=${resp && resp.decision_id}`,
+    );
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    showError(`Ошибка обновления outcome: ${detail}`);
+  } finally {
+    state.history.patching = false;
+    renderHistorySubtab();
+  }
+}
+
+async function deleteHeatHandler(heatId) {
+  // eslint-disable-next-line no-alert
+  const ok = window.confirm(
+    `Удалить плавку #${heatId}? Это действие необратимо.`,
+  );
+  if (!ok) return;
+  clearError();
+  try {
+    await apiFetch(
+      `/api/deox/heats/${encodeURIComponent(heatId)}`,
+      { method: 'DELETE' },
+    );
+    state.history.items = state.history.items.filter((it) => it.id !== heatId);
+    state.history.total = Math.max(0, state.history.total - 1);
+    if (state.history.editingId === heatId) state.history.editingId = null;
+    showInfo(`Плавка #${heatId} удалена.`);
+    // Refresh plants list — a plant_id may have lost its last heat.
+    reloadPlantsList();
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    showError(`Ошибка удаления: ${detail}`);
+  } finally {
+    renderHistorySubtab();
   }
 }
 
@@ -1975,6 +3142,194 @@ async function dispatchPost(path, body, key, renderFn) {
 
 // ──────────────────── nav / model change ────────────────────
 
+// ──────────────────── η_Al calibration sub-tab (PR 10) ────────────────────
+//
+// Two read endpoints + one run endpoint feed this tab:
+//   GET  /api/deox/eta-al-model/status — trained ML model metrics + plants
+//   GET  /api/deox/calibrations        — plant×method Bayesian posteriors
+//   POST /api/deox/calibrations/run    — (re)run calibration synchronously
+//
+// We render two panels: the ML model status block (R² / 90%-CI coverage with
+// an amber pill when out of the 85-95% band) and the plant calibrations table
+// (one row per plant×method, skipped rows tagged). A «Запустить калибровку»
+// button re-runs all plants and re-fetches both endpoints.
+
+async function loadEtaCalibOnce() {
+  if (state.etaCalib.loading) return;
+  if (state.etaCalib.loaded) return;
+  state.etaCalib.loading = true;
+  state.etaCalib.error = null;
+  try {
+    const [statusResp, calibResp] = await Promise.all([
+      apiFetch('/api/deox/eta-al-model/status'),
+      apiFetch('/api/deox/calibrations'),
+    ]);
+    state.etaCalib.modelStatus = statusResp || null;
+    state.etaCalib.calibrations = Array.isArray(calibResp.items)
+      ? calibResp.items : [];
+    state.etaCalib.loaded = true;
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    state.etaCalib.error = `Не удалось загрузить состояние калибровки: ${detail}`;
+  } finally {
+    state.etaCalib.loading = false;
+  }
+}
+
+async function runEtaCalibration() {
+  if (state.etaCalib.running) return;
+  state.etaCalib.running = true;
+  clearError();
+  renderEtaCalibSubtab();
+  try {
+    const resp = await apiFetch('/api/deox/calibrations/run', {
+      method: 'POST',
+      body: {},   // null plant_id → all plants
+    });
+    const n = resp && resp.plants_calibrated;
+    const written = resp && resp.yaml_written;
+    showInfo(
+      `Калибровка завершена: ${n} цех(ов), записано YAML: ${written}.`,
+    );
+    // Re-fetch both endpoints so the table + status reflect new posteriors.
+    state.etaCalib.loaded = false;
+    await loadEtaCalibOnce();
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    showError(`Ошибка калибровки: ${detail}`);
+  } finally {
+    state.etaCalib.running = false;
+    renderEtaCalibSubtab();
+  }
+}
+
+function renderEtaCalibModelPanel() {
+  const s = state.etaCalib.modelStatus;
+  if (!s || !s.model_present) {
+    return el('div', { class: 'deox-result' },
+      el('div', { class: 'deox-form-heading' }, 'ML-модель η_Al'),
+      el('div', { class: 'deox-warning low' },
+        'Модель не обучена. Обучите модель η_Al (deox_calibration class) ' +
+        'в вкладке «Обучение», затем калибровка сможет смешивать plant ' +
+        'posterior с глобальным ML-прогнозом.'),
+    );
+  }
+  const coverage = s.coverage_90_ci;
+  const inTarget = !!s.coverage_in_target;
+  const coveragePill = coverage == null
+    ? el('span', { class: 'deox-context-value' }, '—')
+    : el('span', {
+        class: inTarget ? 'deox-context-value' : 'deox-warning medium',
+        style: inTarget ? {} : { padding: '2px 8px', borderRadius: '4px' },
+      }, `${formatNumber(coverage * 100, 1)} %${inTarget ? '' : ' ⚠ вне 85–95 %'}`);
+
+  const grid = el('div', { class: 'deox-result-grid' },
+    cell('Версия модели', s.model_version || '—'),
+    cell('R² (test)', s.r2_test == null ? '—' : formatNumber(s.r2_test, 3)),
+    cell('N train', s.n_train == null ? '—' : String(s.n_train)),
+    cell('Обучена', s.trained_at ? formatHeatTs(s.trained_at) : '—'),
+  );
+  const coverageRow = el('div', { class: 'deox-result-grid' },
+    el('div', { class: 'deox-result-cell' },
+      el('div', { class: 'deox-result-cell-label' }, 'Покрытие 90% CI'),
+      el('div', { class: 'deox-result-cell-value' }, coveragePill)),
+  );
+  return el('div', { class: 'deox-result' },
+    el('div', { class: 'deox-form-heading' }, 'ML-модель η_Al'),
+    grid,
+    coverageRow,
+  );
+}
+
+function renderEtaCalibTable() {
+  const rows = state.etaCalib.calibrations;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return el('div', { class: 'deox-result' },
+      el('div', { class: 'deox-form-heading' }, 'Plant-калибровки (Bayesian posterior)'),
+      el('div', { class: 'deox-ai-subnote' },
+        'Калибровок пока нет. Нажмите «Запустить калибровку», чтобы посчитать ' +
+        'posterior η_Al по историческим плавкам (нужно ≥30 плавок на метод).'),
+    );
+  }
+  const header = el('tr', {},
+    el('th', {}, 'Цех'),
+    el('th', {}, 'Метод'),
+    el('th', {}, 'N плавок'),
+    el('th', {}, 'η_post'),
+    el('th', {}, 'q05–q95'),
+    el('th', {}, 'η_prior'),
+    el('th', {}, 'Статус'),
+  );
+  const body = rows.map((r) => {
+    const skipped = r.skipped_reason != null;
+    const post = r.posterior_eta_mean;
+    const q05 = r.posterior_eta_q05;
+    const q95 = r.posterior_eta_q95;
+    return el('tr', skipped ? { class: 'deox-row-skipped' } : {},
+      el('td', {}, escapeHtml(r.plant_id)),
+      el('td', { class: 'mono' }, escapeHtml(r.method_id)),
+      el('td', { class: 'mono' }, r.n_heats_used == null ? '—' : String(r.n_heats_used)),
+      el('td', { class: 'mono' }, post == null ? '—' : formatNumber(post, 3)),
+      el('td', { class: 'mono' },
+        (q05 == null || q95 == null)
+          ? '—'
+          : `${formatNumber(q05, 3)}–${formatNumber(q95, 3)}`),
+      el('td', { class: 'mono' },
+        r.prior_eta_mean == null ? '—' : formatNumber(r.prior_eta_mean, 3)),
+      el('td', {},
+        skipped
+          ? el('span', { class: 'deox-warning low', style: { padding: '2px 6px' } },
+              escapeHtml(r.skipped_reason))
+          : el('span', { class: 'deox-context-value' }, 'OK')),
+    );
+  });
+  const table = el('table', { class: 'candidate-table' },
+    el('thead', {}, header),
+    el('tbody', {}, ...body),
+  );
+  return el('div', { class: 'deox-result' },
+    el('div', { class: 'deox-form-heading' }, 'Plant-калибровки (Bayesian posterior)'),
+    table,
+  );
+}
+
+function renderEtaCalibSubtab() {
+  if (!elements) return;
+
+  const heading = el('div', { class: 'deox-form-heading' },
+    'Калибровка η_Al — plant posterior + глобальный ML');
+  const subnote = el('div', { class: 'deox-ai-subnote' },
+    'Bayesian-калибровка обновляет литературный prior η_Al posterior\'ом по ' +
+    'историческим плавкам каждого цеха (в logit-пространстве). Глобальная ' +
+    'ML-модель добавляет feature-aware прогноз; predictor смешивает оба ' +
+    'источника (mixture-of-experts). Включите «Использовать ML-прогноз η_Al» ' +
+    'в табе «Оптимизация метода», чтобы применить это вместо литературного η.');
+  const runBtn = el('button', {
+    class: 'btn primary',
+    type: 'button',
+    onClick: () => runEtaCalibration(),
+    ...(state.etaCalib.running ? { disabled: 'disabled' } : {}),
+  }, state.etaCalib.running ? 'Калибрую…' : 'Запустить калибровку');
+  const actions = el('div', { class: 'deox-actions' }, runBtn);
+
+  elements.formContainer.replaceChildren(heading, subnote, actions);
+
+  if (state.etaCalib.loading) {
+    elements.resultContainer.replaceChildren(
+      el('div', { class: 'deox-ai-subnote' }, 'Загрузка…'));
+    return;
+  }
+  if (state.etaCalib.error) {
+    elements.resultContainer.replaceChildren(
+      el('div', { class: 'deox-warning high' }, state.etaCalib.error));
+    return;
+  }
+  elements.resultContainer.replaceChildren(
+    renderEtaCalibModelPanel(),
+    renderEtaCalibTable(),
+  );
+}
+
 function setSubtab(id) {
   if (state.subtab === id) return;
   // Block switching away from a running AI cycle — the form holds the
@@ -2010,6 +3365,18 @@ function setSubtab(id) {
         readOptimizeForm(elements.formContainer);
       } catch {
         // ignore — toggles are already preserved via their onChange handlers.
+      }
+    } else if (prevTab === 'history') {
+      // History sub-tab: if the create form is open, flush its inputs
+      // into state.history.formValues so the user keeps half-typed data
+      // when they switch back. readNewHeatForm throws on missing
+      // required fields — swallow that here (we don't submit on tab leave).
+      if (state.history.formOpen && elements && elements.formContainer) {
+        try {
+          readNewHeatForm(elements.formContainer);
+        } catch {
+          // half-typed required field — keep cached values intact.
+        }
       }
     } else {
       const schemaFn = prevTab === 'forward'
@@ -2052,6 +3419,23 @@ function setSubtab(id) {
     } else {
       renderOptimizeForm();
     }
+  } else if (id === 'eta_calib') {
+    // Render skeleton + fetch status/calibrations on first activation.
+    renderEtaCalibSubtab();
+    if (!state.etaCalib.loaded) {
+      loadEtaCalibOnce().then(() => {
+        if (state.subtab === 'eta_calib') renderEtaCalibSubtab();
+      });
+    }
+  } else if (id === 'history') {
+    // Render skeleton + fetch data on first activation. Re-renders happen
+    // inside loadHistoryDataOnce / loadHistoryList finally{} blocks.
+    renderHistorySubtab();
+    if (!state.history.loaded) {
+      loadHistoryDataOnce().then(() => {
+        if (state.subtab === 'history') renderHistorySubtab();
+      });
+    }
   }
   // Restore last result for that tab (or clear).
   if (id === 'forward') renderForwardResult();
@@ -2059,6 +3443,7 @@ function setSubtab(id) {
   else if (id === 'compare') renderCompareResult();
   else if (id === 'ai') renderAiResult();
   else if (id === 'optimize') renderOptimizeResult();
+  // ``history`` / ``eta_calib`` paint their own resultContainer.
 }
 
 function onModelChange(modelId) {
@@ -2138,6 +3523,20 @@ async function loadAll() {
       } else {
         renderOptimizeForm();
       }
+    } else if (state.subtab === 'eta_calib') {
+      renderEtaCalibSubtab();
+      if (!state.etaCalib.loaded) {
+        loadEtaCalibOnce().then(() => {
+          if (state.subtab === 'eta_calib') renderEtaCalibSubtab();
+        });
+      }
+    } else if (state.subtab === 'history') {
+      renderHistorySubtab();
+      if (!state.history.loaded) {
+        loadHistoryDataOnce().then(() => {
+          if (state.subtab === 'history') renderHistorySubtab();
+        });
+      }
     }
   } catch (err) {
     const detail = err instanceof ApiError ? err.message : String(err);
@@ -2165,6 +3564,19 @@ export function init(container) {
   state.optimize = {
     methods: [], defaultMethodId: null,
     methodsLoaded: false, methodsLoading: false, saving: false,
+  };
+  state.history = {
+    loaded: false, loading: false, error: null,
+    items: [], total: 0, nextBeforeId: null,
+    filters: { plant_id: '', method_id: '', has_outcome: '' },
+    plants: [],
+    formOpen: false, formValues: null, creating: false,
+    editingId: null,
+    editValues: {
+      o_a_after_ppm: '', al_residual_pct: '',
+      eta_al_effective: '', quality_flag: '',
+    },
+    patching: false,
   };
 
   const skeleton = buildSkeleton();

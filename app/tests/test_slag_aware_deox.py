@@ -773,3 +773,316 @@ def test_cost_breakdown_has_gas_and_handling_keys():
     )
     assert res_ingot.cost_breakdown["gas_eur"] is None
     assert res_ingot.cost_breakdown["handling_eur"] == 0.0
+
+
+# ── PR 6: η_Al uncertainty propagation ──
+
+
+def test_posterior_none_collapses_to_point():
+    """Без posterior — p10=p50=p90=al_pure_kg."""
+    res = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0,
+        o_a_initial_ppm=500.0, target_o_a_ppm=5.0, target_al_pct=0.02,
+        method="asis_shot",
+        eta_al_posterior_logit=None,
+    )
+    assert res.al_pure_kg_p10 == res.al_pure_kg_p50 == res.al_pure_kg_p90
+    assert res.al_pure_kg == res.al_pure_kg_p50  # backwards-compat
+
+
+def test_posterior_zero_sigma_raises():
+    with pytest.raises(ValueError, match="posterior sigma"):
+        compute_al_demand_slag_aware(
+            steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+            target_o_a_ppm=5.0, target_al_pct=0.02,
+            method="asis_shot",
+            eta_al_posterior_logit=(1.5, 0.0),
+        )
+
+
+def test_posterior_widens_interval_with_sigma():
+    """σ > 0 → p10 < p50 < p90, ширина увеличивается с σ."""
+    base_kwargs = dict(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+    )
+    # μ_post = logit(0.82) ≈ 1.516
+    import math
+    mu = math.log(0.82 / 0.18)
+    res_narrow = compute_al_demand_slag_aware(
+        **base_kwargs, eta_al_posterior_logit=(mu, 0.05),
+    )
+    res_wide = compute_al_demand_slag_aware(
+        **base_kwargs, eta_al_posterior_logit=(mu, 0.3),
+    )
+    assert res_narrow.al_pure_kg_p10 < res_narrow.al_pure_kg_p50 < res_narrow.al_pure_kg_p90
+    assert res_wide.al_pure_kg_p10 < res_wide.al_pure_kg_p50 < res_wide.al_pure_kg_p90
+    # Wide should have larger ratio p90/p10
+    ratio_narrow = res_narrow.al_pure_kg_p90 / res_narrow.al_pure_kg_p10
+    ratio_wide = res_wide.al_pure_kg_p90 / res_wide.al_pure_kg_p10
+    assert ratio_wide > ratio_narrow
+
+
+def test_p50_close_to_invlogit_mu_when_posterior_given():
+    """p50 = K / invlogit(μ_post)."""
+    import math
+    mu = math.log(0.85 / 0.15)  # ≈ logit(0.85) = 1.7346
+    res = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+        eta_al_posterior_logit=(mu, 0.1),
+    )
+    # p50 должен быть близок к Al при η=0.85, не Al при η=0.82 (literature)
+    res_at_85 = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+        eta_al_override=0.85,
+    )
+    assert abs(res.al_pure_kg_p50 - res_at_85.al_pure_kg) / res_at_85.al_pure_kg < 0.02
+
+
+def test_override_wins_over_posterior():
+    """Если задан override и posterior — override побеждает + warning."""
+    res = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+        eta_al_override=0.90,
+        eta_al_posterior_logit=(1.5, 0.2),
+    )
+    assert res.al_pure_kg_p10 == res.al_pure_kg_p50 == res.al_pure_kg_p90
+    assert any("override" in w.lower() and "posterior" in w.lower() for w in res.warnings)
+
+
+def test_posterior_invalid_format_raises():
+    with pytest.raises(ValueError):
+        compute_al_demand_slag_aware(
+            steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+            target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+            eta_al_posterior_logit=(1.5,),  # not 2-tuple
+        )
+
+
+def test_quantile_inverse_monotonic_eta_to_al():
+    """Численная проверка: p90_Al = K / η_q10, p10_Al = K / η_q90."""
+    import math
+    mu, sigma = 1.5, 0.2
+    res = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+        eta_al_posterior_logit=(mu, sigma),
+    )
+    # Recover K from p50 = K / invlogit(mu)
+    Z_80 = 1.2816
+
+    def invlogit(z: float) -> float:
+        return 1.0 / (1.0 + math.exp(-z))
+
+    eta_median = invlogit(mu)
+    eta_q10 = invlogit(mu - Z_80 * sigma)
+    eta_q90 = invlogit(mu + Z_80 * sigma)
+    K = res.al_pure_kg_p50 * eta_median
+    assert abs(res.al_pure_kg_p90 - K / eta_q10) < 0.01
+    assert abs(res.al_pure_kg_p10 - K / eta_q90) < 0.01
+
+
+def test_inputs_snapshot_includes_posterior():
+    res = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+        eta_al_posterior_logit=(1.5, 0.1),
+    )
+    assert res.inputs.get("eta_al_posterior_logit") == [1.5, 0.1]
+
+
+def test_inputs_snapshot_includes_none_posterior():
+    res = compute_al_demand_slag_aware(
+        steel_mass_ton=100.0, o_a_initial_ppm=500.0,
+        target_o_a_ppm=5.0, target_al_pct=0.02, method="asis_shot",
+    )
+    assert res.inputs.get("eta_al_posterior_logit") is None
+
+
+# ── PR 7: multi-objective ─────────────────────────────────────────────
+
+
+def test_recommend_default_objective_is_cost():
+    """Без objective kwarg recommend_optimal_method ведёт себя как до PR 7.
+
+    Тот же chosen_method_id, ``objective == "cost"``, и ``pareto_frontier``
+    остаётся пустым для не-pareto веток (контракт backwards-compat).
+    """
+    r1 = recommend_optimal_method(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+    )
+    r2 = recommend_optimal_method(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+        objective="cost",
+    )
+    assert r1.chosen_method_id == r2.chosen_method_id
+    assert r1.objective == "cost"
+    assert r1.pareto_frontier == []
+
+
+def test_recommend_objective_al_mass_picks_min_al():
+    """objective='al_mass' → chosen = min al_pure_kg среди survivors."""
+    r = recommend_optimal_method(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+        objective="al_mass",
+    )
+    chosen_al = next(
+        row.al_pure_kg for row in r.pareto_table
+        if row.method_id == r.chosen_method_id
+    )
+    all_al = [row.al_pure_kg for row in r.pareto_table]
+    assert chosen_al == min(all_al)
+    assert r.objective == "al_mass"
+
+
+def test_recommend_objective_pareto_returns_frontier_field():
+    """objective='pareto' → pareto_frontier ≥ 1, все non-dominated."""
+    r = recommend_optimal_method(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+        objective="pareto",
+    )
+    assert r.objective == "pareto"
+    assert len(r.pareto_frontier) >= 1
+    # Каждая точка frontier должна быть non-dominated внутри frontier.
+    for p in r.pareto_frontier:
+        for o in r.pareto_frontier:
+            if o is p:
+                continue
+            dominated = (
+                o.al_pure_kg <= p.al_pure_kg
+                and o.cost_per_heat_eur <= p.cost_per_heat_eur
+                and (
+                    o.al_pure_kg < p.al_pure_kg
+                    or o.cost_per_heat_eur < p.cost_per_heat_eur
+                )
+            )
+            assert not dominated, (
+                f"{p.method_id} dominated by {o.method_id} inside frontier"
+            )
+
+
+def test_recommend_objective_pareto_chosen_is_knee():
+    """Chosen — точка с минимальным L2 от утопии в min-max norm space."""
+    r = recommend_optimal_method(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+        objective="pareto",
+    )
+    als = [p.al_pure_kg for p in r.pareto_frontier]
+    costs = [p.cost_per_heat_eur for p in r.pareto_frontier]
+    al_min, al_max = min(als), max(als)
+    cost_min, cost_max = min(costs), max(costs)
+    al_range = max(al_max - al_min, 1e-9)
+    cost_range = max(cost_max - cost_min, 1e-9)
+
+    def l2(p):
+        a = (p.al_pure_kg - al_min) / al_range
+        c = (p.cost_per_heat_eur - cost_min) / cost_range
+        return (a * a + c * c) ** 0.5
+
+    chosen = next(
+        p for p in r.pareto_frontier if p.method_id == r.chosen_method_id
+    )
+    chosen_l2 = l2(chosen)
+    for p in r.pareto_frontier:
+        assert l2(p) >= chosen_l2 - 1e-9
+
+
+def test_pareto_filter_removes_dominated():
+    """Synthetic 4 точки — 2 dominated, 2 на frontier."""
+    from app.backend.slag_aware_deox import MethodCompareRow, _pareto_filter
+    rows = [
+        MethodCompareRow(
+            method_id="A", method_name="A", eta_al_used=0.8,
+            al_pure_kg=100.0, al_charge_kg=102.0,
+            cost_per_heat_eur=300.0, cost_per_ton_eur=3.0,
+            al_specific_kg_per_t=1.0, carrier_gas=None,
+            scatter_kg=5.0, warnings=[],
+        ),
+        MethodCompareRow(
+            method_id="B", method_name="B", eta_al_used=0.8,
+            al_pure_kg=120.0, al_charge_kg=122.0,
+            cost_per_heat_eur=400.0, cost_per_ton_eur=4.0,
+            al_specific_kg_per_t=1.2, carrier_gas=None,
+            scatter_kg=5.0, warnings=[],
+        ),  # dominated by A
+        MethodCompareRow(
+            method_id="C", method_name="C", eta_al_used=0.8,
+            al_pure_kg=80.0, al_charge_kg=82.0,
+            cost_per_heat_eur=500.0, cost_per_ton_eur=5.0,
+            al_specific_kg_per_t=0.8, carrier_gas=None,
+            scatter_kg=5.0, warnings=[],
+        ),  # frontier (lower Al than A)
+        MethodCompareRow(
+            method_id="D", method_name="D", eta_al_used=0.8,
+            al_pure_kg=150.0, al_charge_kg=152.0,
+            cost_per_heat_eur=600.0, cost_per_ton_eur=6.0,
+            al_specific_kg_per_t=1.5, carrier_gas=None,
+            scatter_kg=5.0, warnings=[],
+        ),  # dominated by A
+    ]
+    front = _pareto_filter(rows)
+    ids = {r.method_id for r in front}
+    assert ids == {"A", "C"}
+
+
+def test_pareto_filter_singleton():
+    """Singleton frontier — _pick_knee возвращает (only, None, 0.0)."""
+    from app.backend.slag_aware_deox import (
+        MethodCompareRow,
+        _pareto_filter,
+        _pick_knee,
+    )
+    rows = [
+        MethodCompareRow(
+            method_id="A", method_name="A", eta_al_used=0.8,
+            al_pure_kg=100.0, al_charge_kg=102.0,
+            cost_per_heat_eur=300.0, cost_per_ton_eur=3.0,
+            al_specific_kg_per_t=1.0, carrier_gas=None,
+            scatter_kg=5.0, warnings=[],
+        ),
+    ]
+    front = _pareto_filter(rows)
+    assert len(front) == 1
+    chosen, runner_up, l2 = _pick_knee(front)
+    assert chosen.method_id == "A"
+    assert runner_up is None
+    assert l2 == 0.0
+
+
+def test_recommend_unknown_objective_raises():
+    """Unknown objective → ValueError на самом раннем шаге."""
+    with pytest.raises(ValueError, match="Unknown objective"):
+        recommend_optimal_method(
+            steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+            target_o_a_ppm=5.0, target_al_pct=0.018,
+            objective="unknown",
+        )
+
+
+def test_pareto_dominated_methods_in_rejected():
+    """Dominated методы попадают в rejected_methods с reason."""
+    r = recommend_optimal_method(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+        objective="pareto",
+    )
+    # full set из compare_addition_methods даёт 5 методов в seed-каталоге.
+    # Если хотя бы один метод dominated (frontier < survivors) — он должен
+    # появиться в rejected с reason содержащим "dominated".
+    full_methods = compare_addition_methods(
+        steel_mass_ton=371.0, o_a_initial_ppm=657.0,
+        target_o_a_ppm=5.0, target_al_pct=0.018,
+    )
+    if len(r.pareto_frontier) < len(full_methods):
+        assert any(
+            "dominated" in str(rej.get("reason", ""))
+            for rej in r.rejected_methods
+        )

@@ -192,6 +192,11 @@ class HumanInTheLoopRequired(Exception):
         super().__init__(question)
 
 
+# Hardcoded list of classes that skip inverse_design / validation / reporting
+# (process feedback classes; PR 14 may refactor to YAML флаг).
+_PROCESS_FEEDBACK_CLASSES = {"deox_calibration"}
+
+
 class Orchestrator:
     """
     Главный координатор pipeline.
@@ -241,15 +246,34 @@ class Orchestrator:
             tags=["pipeline_run"],
         )
         
-        all_phases = phases or [
-            "data_acquisition",
-            "preprocessing",
-            "feature_engineering",
-            "training",
-            "inverse_design",
-            "validation",
-            "reporting",
-        ]
+        if phases is None:
+            steel_class = user_request.get("steel_class", "pipe_hsla")
+            if steel_class in _PROCESS_FEEDBACK_CLASSES:
+                # PR 8: process feedback classes — η_Al и подобные — это
+                # outcome процесса, не композиционный design target.
+                # Inverse design / validation / reporting не имеют смысла.
+                all_phases = [
+                    "data_acquisition",
+                    "feature_engineering",
+                    "training",
+                ]
+                logger.info(
+                    "Process feedback class %r — pipeline сокращён до %s "
+                    "(skip inverse_design / validation / reporting)",
+                    steel_class, all_phases,
+                )
+            else:
+                all_phases = [
+                    "data_acquisition",
+                    "preprocessing",
+                    "feature_engineering",
+                    "training",
+                    "inverse_design",
+                    "validation",
+                    "reporting",
+                ]
+        else:
+            all_phases = phases
         
         for phase in all_phases:
             logger.info("=== Phase: %s ===", phase)
@@ -337,10 +361,19 @@ class Orchestrator:
     def _build_task_for_phase(self, phase: str, state: PipelineState) -> dict:
         """Формирует task-dict для конкретного агента."""
         user_request = state.user_request
-        base_task = {"phase": phase, "user_request": user_request}
-        
+        steel_class = user_request.get("steel_class", "pipe_hsla")
+        base_task = {
+            "phase": phase,
+            "user_request": user_request,
+            "steel_class": steel_class,
+        }
+
         if phase == "data_acquisition":
-            return {**base_task, "operation": "download_nims_hsla"}
+            return {
+                **base_task,
+                "operation": "download_nims_hsla",
+                "n_rows": user_request.get("n_rows"),
+            }
         if phase == "preprocessing":
             return {**base_task, "operation": "clean_and_validate"}
         if phase == "feature_engineering":
@@ -352,6 +385,7 @@ class Orchestrator:
                 "operation": "train_xgboost",
                 "target": user_request.get("target_property", "yield_strength_mpa"),
                 "feature_set": state.features.get("feature_set_name"),
+                "n_optuna_trials": user_request.get("n_optuna_trials", 40),
             }
         if phase == "inverse_design":
             return {

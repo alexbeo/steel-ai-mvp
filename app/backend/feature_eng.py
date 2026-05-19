@@ -132,15 +132,86 @@ class FeatureEngAgent:
     def run(self, state, task: dict):
         from app.backend.engine import AgentResult
         from decision_log.logger import log_decision
-        
+
+        steel_class = task.get("steel_class", "pipe_hsla")
+
         try:
+            # ── PR 8: non-HSLA classes — generic путь через registry.
+            if steel_class != "pipe_hsla":
+                from app.backend.steel_classes import (
+                    compute_features_for_class,
+                    load_steel_class,
+                )
+
+                profile = load_steel_class(steel_class)
+                clean_path = Path(
+                    task.get("dataset_path")
+                    or state.dataset.get("clean_path")
+                    or state.dataset.get("raw_path")
+                )
+                if not clean_path.exists():
+                    return AgentResult(
+                        agent_name=self.name, success=False,
+                        output={}, error=f"Dataset not found: {clean_path}",
+                    )
+
+                df = pd.read_parquet(clean_path)
+                df_feat = compute_features_for_class(df, steel_class)
+                feature_list = [
+                    f for f in profile.feature_set if f in df_feat.columns
+                ]
+                training_ranges = {
+                    f: [
+                        float(df_feat[f].min()),
+                        float(df_feat[f].max()),
+                    ]
+                    for f in feature_list
+                }
+                features_path = clean_path.parent / f"{steel_class}_features.parquet"
+                df_feat.to_parquet(features_path, index=False)
+
+                log_decision(
+                    phase="feature_engineering",
+                    decision=(
+                        f"Feature set для {steel_class!r}: "
+                        f"{len(feature_list)} numeric features "
+                        f"(engineering={profile.feature_engineering})"
+                    ),
+                    reasoning=(
+                        f"Features прочитаны из data/steel_classes/{steel_class}.yaml. "
+                        f"feature_engineering='{profile.feature_engineering}' — "
+                        f"для passthrough используются raw columns без derivations."
+                    ),
+                    context={
+                        "feature_set": f"{steel_class}_v1",
+                        "n_features": len(feature_list),
+                        "n_samples": len(df_feat),
+                        "steel_class": steel_class,
+                    },
+                    author="feature_eng",
+                    tags=["features", steel_class],
+                )
+
+                return AgentResult(
+                    agent_name=self.name,
+                    success=True,
+                    output={
+                        "features_path": str(features_path),
+                        "feature_set_name": f"{steel_class}_v1",
+                        "feature_list": feature_list,
+                        "n_features": len(feature_list),
+                        "training_ranges": training_ranges,
+                        "steel_class": steel_class,
+                    },
+                )
+
             clean_path = Path(task.get("dataset_path") or state.dataset.get("clean_path"))
             if not clean_path.exists():
                 return AgentResult(
                     agent_name=self.name, success=False,
                     output={}, error=f"Dataset not found: {clean_path}",
                 )
-            
+
             df = pd.read_parquet(clean_path)
             df_feat = compute_hsla_features(df)
             

@@ -1,0 +1,86 @@
+id: deox_calibration
+name: "Калибровка эффективности Al-раскисления (multi-plant LF)"
+standard: "Internal — process model, not a steel grade"
+# VIRTUAL CLASS NOTE (R-004 PR 4, plan snug-roaming-seahorse):
+#   Этот класс — НЕ реальный сорт стали. Описывает process feedback для
+#   калибровки η_Al модели в Tier 2 capabilities:
+#     - PR 8  — ML регрессор η_Al (XGBoost + quantile)
+#     - PR 11 — symbolic regression закрытой формы η_Al(features)
+#     - PR 12 — anomaly explainer для outlier heats (η_Al << baseline)
+#   Inverse design НЕ поддерживается (η_Al — process outcome, не composition
+#   design target). deox_advisor НЕ применим (этот класс САМ — feedback loop
+#   для deox).
+target_properties:
+  - id: eta_al_effective
+    label: "η_Al эффективная, доля"
+    range: [0.30, 0.99]
+# Numeric-only feature_set (Option A из design-doc).
+# Категориальные поля (method_id, plant_id, addition_timing, carrier_gas,
+# vacuum_treatment) присутствуют в DataFrame для трассировки + heats.db
+# reference, но НЕ в feature_set — их эффект агрегирован численно через
+# method_eta_baseline (из data/deox_methods/al_addition_methods.yaml) и
+# plant_offset_baseline (внутренние константы PLANT_OFFSETS в data_curator).
+feature_set:
+  - c_pct
+  - mn_pct
+  - si_pct
+  - s_pct
+  - p_pct
+  - slag_mass_kg
+  - slag_feo_pct
+  - slag_mno_pct
+  - slag_sio2_pct
+  - slag_cao_pct
+  - t_tap_c
+  - t_lf_arrival_c
+  - t_al_addition_c
+  - dt_to_al_min
+  - co_deox_fesi_kg
+  - ar_stir_nm3
+  - refractory_heat_count
+  - steel_mass_ton
+  - o_a_initial_ppm
+  - method_eta_baseline
+  - plant_offset_baseline
+physical_bounds:
+  c_pct: [0.0, 1.5]
+  mn_pct: [0.0, 3.0]
+  si_pct: [0.0, 2.5]
+  s_pct: [0.0, 0.05]
+  p_pct: [0.0, 0.05]
+  slag_mass_kg: [0.0, 10000.0]
+  slag_feo_pct: [0.0, 50.0]
+  slag_mno_pct: [0.0, 20.0]
+  slag_sio2_pct: [0.0, 30.0]
+  slag_cao_pct: [0.0, 70.0]
+  t_tap_c: [1400.0, 1700.0]
+  t_lf_arrival_c: [1400.0, 1700.0]
+  t_al_addition_c: [1400.0, 1700.0]
+  dt_to_al_min: [0.0, 120.0]
+  co_deox_fesi_kg: [0.0, 5000.0]
+  ar_stir_nm3: [0.0, 100.0]
+  refractory_heat_count: [0.0, 500.0]
+  steel_mass_ton: [1.0, 500.0]
+  o_a_initial_ppm: [0.0, 2000.0]
+  method_eta_baseline: [0.50, 0.95]
+  plant_offset_baseline: [-0.10, 0.10]
+  eta_al_effective: [0.30, 0.99]
+expected_top_features:
+  - slag_feo_pct
+  - method_eta_baseline
+  - t_al_addition_c
+  - dt_to_al_min
+  - co_deox_fesi_kg
+process_params:
+  - t_tap_c
+  - t_lf_arrival_c
+  - t_al_addition_c
+  - dt_to_al_min
+  - ar_stir_nm3
+  - co_deox_fesi_kg
+  - refractory_heat_count
+synthetic_generator_name: deox_calibration
+cost_seed_path: ""
+feature_engineering: passthrough
+# target_o_activity_ppm НЕ задан намеренно — этот класс сам про deox feedback,
+# а не цель для deox_advisor.

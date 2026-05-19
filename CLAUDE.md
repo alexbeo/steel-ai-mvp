@@ -42,6 +42,7 @@ PYTHONPATH=. .venv/bin/python scripts/show_property_cost_on_agrawal.py    # EC.1
 PYTHONPATH=. .venv/bin/python scripts/design_recipe_with_critic.py        # recipe pair
 PYTHONPATH=. .venv/bin/python scripts/propose_next_experiments.py         # B2
 PYTHONPATH=. .venv/bin/python scripts/explain_ood_record.py               # A3
+PYTHONPATH=. .venv/bin/python scripts/explain_high_al_heats.py            # PR 12 high-Al cohort diagnosis
 ```
 
 ## Архитектура — ключевое для продуктивности
@@ -116,7 +117,22 @@ Physical bounds и expected top-features для Critic проверок `D07` / 
 
 UI — вкладка «🔥 Раскисление» с 5 sub-tabs (Forward / Inverse / Compare / AI / 🎯 Оптимизация метода). Target O_a читается из активного `SteelClassProfile.target_o_activity_ppm` (HSLA=5, Q&T=15). Pattern Library имеет фазу `Phase.DEOXIDATION` + паттерны `DX01`/`DX02`/`DX03` (forward/inverse) и `DX04-DX07` (slag-aware optimization). Decision Log — **опт-ин** (кнопка «Сохранить») во избежание спама БД на производственном темпе 50-200 плавок/день. Slag-aware endpoints: `GET /api/deox/methods`, `POST /api/deox/optimize`, `POST /api/deox/optimize/save` (recompute + YAML snapshot копия в `decision_log/deox_methods_snapshots/<ISO-ts>.yaml`, tag `deox_method_recommendation`).
 
-**Не входит в MVP**: кинетика растворения Al, баланс FeO в шлаке, комбинированное раскисление (Al+FeSi+Ca), ML, feedback loop, интеграция с анализаторами O. Это фазы v0.6+.
+**Symbolic η_Al correction (B2 / PR 11)** — `scripts/symbolic_eta_correction.py` ищет closed-form correction = `eta_al_effective / method_eta_baseline` (data-driven аналог Excel k=0.89) symbolic regression-ом (reuse `symbolic_regressor.run_symbolic_regression`, B1 sealed) на synthetic deox-калибровке или `heats.db`. Опциональный PhD-критик `app/backend/symbolic_eta_critic.py` (`make_symbolic_eta_critic()`, prompt `symbolic_eta_critic.md` gitignored, Sonnet-4-6) ревьюит physical plausibility knee + best формул (≤2 calls).
+
+**High-Al cohort diagnoser (PR 12, R-003 / R-001 Block IV)** — discovery tool `app/backend/high_al_diagnoser.py` (CLI-only, `scripts/explain_high_al_heats.py`). Находит cohort плавок с аномально высоким удельным расходом Al (`--method auto`: prediction если есть real η_Al ML-модель, иначе percentile внутри страт по `(method_id, o_a band)`) и через Sonnet (`claude-sonnet-4-6`) ищет общие process-факторы. **Cohort analysis ≠ single-record A3** (`anomaly_explainer.py`): главный сигнал — `feature_deltas` (Python считает outlier vs baseline mean по диагностическим факторам, LLM ранжирует по mechanism plausibility). R-003 pattern: prompt `high_al_diagnoser.md` (gitignored) через `load_prompt` try/except → None, factory gate на ANTHROPIC_API_KEY, structured `tool_use`, `cache_control` ephemeral. Synthetic deox dataset не содержит `al_added_kg` — CLI деривирует его из physics (обратная формула через `AL_TO_O_MASS_RATIO` + target O_a ~5 ppm); heats.db source имеет `al_added_kg` напрямую. Decision Log — `phase="deoxidation"`, tag `high_al_diagnoser`.
+
+**η_Al calibration stack (Phase 1, PR 1-14)** — двухуровневая plant-specific + feature-aware оценка усвоения Al для снижения overconsumption (цель −10..−15%). Spec: `docs/superpowers/specs/2026-05-20_deox-ai-tier1-tier2.md`. Слои:
+
+- **Хранилище плавок** — `app/backend/heat_records.py` (Pydantic `HeatRecord` + SQLite CRUD, схема `data/heats/schema.sql`, БД `data/heats/heats.db` gitignored). Ingestion: ручной (UI «История плавок», `app/api/routers/heats.py`), Excel ETL (`heat_history_etl.py` + `heat_etl_critic.py` + `scripts/import_heats_from_excel.py`), CSV bulk, synthetic. **Caveat:** функции берут `db_path=DEFAULT_DB_PATH` как default-аргумент — monkeypatch модульной константы не работает, передавайте `db_path=` явно.
+- **Tier 1 — Bayesian калибровка** — `app/backend/eta_al_calibration.py` (`EtaAlCalibrator`): Normal-Normal conjugate posterior в logit-space над literature prior, per `(plant_id, method_id)`, N≥30 threshold. YAML-снапшоты в `data/deox_methods/calibrations/<plant>.yaml`. CLI `scripts/calibrate_eta_al.py`.
+- **Tier 2 — global ML модель** — тренируется стандартным pipeline (`engine.py`, `scripts/run_pipeline.py --class deox_calibration`), virtual class `deox_calibration` (`data/steel_classes/deox_calibration.yaml`, генератор `data_curator.generate_synthetic_deox_calibration_dataset`).
+- **EtaAlPredictor** — `app/backend/eta_al_predictor.py`: mixture-of-experts (plant posterior + global ML) в logit-space, вес `w = sigmoid((N_plant − 30)/10)`. Без модели → `plant_only` / `literature_fallback` (degrade gracefully).
+- **Conformal интервалы** — `compute_al_demand_slag_aware` распространяет η-uncertainty в массу Al → `al_pure_kg_p10/_p50/_p90`.
+- **Multi-objective optimize** — `recommend_optimal_method(objective=cost/al_mass/pareto)`; pareto frontier + knee point; UI scatter.
+- **Pattern Library DX08-DX12** — η_Al quality-гейты: DX08 (η вне калибровки без plant-данных), DX09 (< N_min плавок → literature prior), DX10 (basicity-экстраполяция, **dormant**), DX11 (TRAINING: `steel_class=='deox_calibration'` AND coverage 90%CI < 0.85 → HIGH/BLOCK), DX12 (plant-posterior↔global ML конфликт > 2σ, **partial-dormant**).
+- **E2E smoke** — `scripts/smoke_test_deox_calibration.py` (10 этапов на synthetic в изолированном tmp; работает без `ANTHROPIC_API_KEY`/real data; `--train` для опционального ML-этапа).
+
+**Не входит в MVP**: кинетика растворения Al, баланс FeO в шлаке, комбинированное раскисление (Al+FeSi+Ca), feedback loop, интеграция с анализаторами O. Phase 2 — shadow-валидация + оценка σ_likelihood + basicity wiring (DX10). Phase 3 — production closed-loop. Это фазы v0.6+.
 
 ### UI и API
 

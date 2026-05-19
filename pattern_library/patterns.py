@@ -838,6 +838,146 @@ def _check_dx07_n2_carrier_for_low_n_target(ctx: dict) -> CheckResult:
 
 
 # =========================================================================
+# DX08-DX12 — η_Al calibration quality gates (PR 13)
+# =========================================================================
+
+
+def _check_dx08_eta_out_of_calibration(ctx: dict) -> CheckResult:
+    """DX08: predictor-produced η_Al вне литературного диапазона метода под
+    ``literature_fallback``.
+
+    Срабатывает только когда η получена из literature-fallback (нет ни plant-,
+    ни ML-калибровки) и выходит за окно ``method_eta_range`` ± 0.05. Manual
+    overrides покрывает DX06 — здесь источник ``user_override`` намеренно
+    игнорируется. plant/mixed/global источники оправдывают deviation, поэтому
+    тоже молчат. MEDIUM.
+    """
+    eta = ctx.get("eta_al_used")
+    eta_range = ctx.get("method_eta_range")
+    source = ctx.get("eta_calibration_source")
+    if eta is None or eta_range is None or source is None:
+        return CheckResult(False)
+    if source != "literature_fallback":
+        return CheckResult(False)  # plant/mixed/global калибровка оправдывает deviation
+    if len(eta_range) != 2:
+        return CheckResult(False)
+    lo, hi = float(eta_range[0]), float(eta_range[1])
+    tol = 0.05
+    if lo - tol <= eta <= hi + tol:
+        return CheckResult(False)
+    return CheckResult(
+        True,
+        message=(
+            f"η_Al = {eta:.2f} (literature-fallback) вне литературного диапазона "
+            f"метода [{lo:.2f}, {hi:.2f}]. Нет ни plant-, ни ML-калибровки — "
+            f"возможно реальное plant-отклонение. Проведите калибровку."
+        ),
+        details={"eta_al_used": round(eta, 3), "range": [lo, hi], "source": source},
+    )
+
+
+def _check_dx09_insufficient_calibration_data(ctx: dict) -> CheckResult:
+    """DX09: plant имеет < ``min_heats_threshold`` плавок для метода → используется
+    literature prior вместо plant-specific posterior. MEDIUM.
+    """
+    n = ctx.get("plant_n_heats_for_method")
+    thr = ctx.get("min_heats_threshold", 30)
+    if n is None:
+        return CheckResult(False)
+    if n >= thr:
+        return CheckResult(False)
+    return CheckResult(
+        True,
+        message=(
+            f"Plant имеет {int(n)} плавок для метода (< {int(thr)}) — используется "
+            f"literature prior, не plant-specific posterior. Накопите больше плавок."
+        ),
+        details={"n_heats": int(n), "threshold": int(thr)},
+    )
+
+
+def _check_dx10_basicity_extrapolation(ctx: dict) -> CheckResult:
+    """DX10: slag basicity текущей плавки вне historical range → экстраполяция.
+
+    DORMANT в PR 13: ключи ``current_slag_basicity`` / ``historical_basicity_range``
+    по умолчанию не передаются (basicity ещё не wired в ctx-builder), поэтому
+    check молчит. Активируется автоматически когда эти ключи появятся. MEDIUM.
+    """
+    current = ctx.get("current_slag_basicity")
+    hist_range = ctx.get("historical_basicity_range")
+    if current is None or hist_range is None:
+        return CheckResult(False)  # dormant
+    if len(hist_range) != 2:
+        return CheckResult(False)
+    lo, hi = float(hist_range[0]), float(hist_range[1])
+    if lo <= current <= hi:
+        return CheckResult(False)
+    return CheckResult(
+        True,
+        message=(
+            f"Slag basicity = {current:.2f} вне исторического диапазона "
+            f"[{lo:.2f}, {hi:.2f}] — η_Al prediction менее надёжна (экстраполяция)."
+        ),
+        details={"basicity": round(current, 2), "historical_range": [lo, hi]},
+    )
+
+
+def _check_dx11_model_coverage_low(ctx: dict) -> CheckResult:
+    """DX11: η_Al-модель (steel_class='deox_calibration') conformal coverage 90%CI
+    < 0.85 → интервалы недостоверны, deploy blocked. HIGH (M02-прецедент).
+
+    В отличие от M02 — gate'ится на ``steel_class == 'deox_calibration'`` и
+    срабатывает только на низком coverage (overconfident), т.к. для η_Al-модели
+    underconfident интервалы менее критичны для on-line advisory.
+    """
+    steel_class = ctx.get("steel_class")
+    coverage = ctx.get("coverage_90_ci")
+    if steel_class != "deox_calibration" or coverage is None:
+        return CheckResult(False)
+    if coverage >= 0.85:
+        return CheckResult(False)
+    return CheckResult(
+        True,
+        message=(
+            f"η_Al-модель: conformal coverage 90% CI = {float(coverage):.1%} < 85% — "
+            f"интервалы overconfident (M02-прецедент). Требуется conformal "
+            f"recalibration или больше калибровочных данных."
+        ),
+        details={"coverage_90_ci": round(float(coverage), 4), "min": 0.85},
+    )
+
+
+def _check_dx12_posterior_global_conflict(ctx: dict) -> CheckResult:
+    """DX12: plant-posterior конфликтует с global ML на > 2σ (logit-space).
+
+    z = |posterior_mu - global_mu| / posterior_sigma. z > 2 означает, что один
+    из источников систематически смещён. Если ``global_eta_logit_mu`` недоступен
+    (predictor не вернул global-ветку) — check молчит. MEDIUM.
+    """
+    p_mu = ctx.get("posterior_eta_logit_mu")
+    g_mu = ctx.get("global_eta_logit_mu")
+    p_sigma = ctx.get("posterior_logit_sigma")
+    if p_mu is None or g_mu is None or p_sigma is None or p_sigma <= 0:
+        return CheckResult(False)
+    z = abs(p_mu - g_mu) / p_sigma
+    if z <= 2.0:
+        return CheckResult(False)
+    return CheckResult(
+        True,
+        message=(
+            f"Plant-posterior (logit μ={p_mu:.2f}) конфликтует с global ML "
+            f"(logit μ={g_mu:.2f}) на {z:.1f}σ (> 2σ). Один из источников "
+            f"систематически смещён — проверьте данные плавок и обучающую выборку."
+        ),
+        details={
+            "posterior_mu": round(p_mu, 3),
+            "global_mu": round(g_mu, 3),
+            "z_sigma": round(z, 2),
+        },
+    )
+
+
+# =========================================================================
 # Библиотека
 # =========================================================================
 
@@ -1107,6 +1247,57 @@ PATTERNS: list[Pattern] = [
         description="method.carrier_gas=='N2' AND target_n_ppm < 50",
         check=_check_dx07_n2_carrier_for_low_n_target,
         suggestion="Заменить carrier-gas на Ar для марок с target [N] < 50 ppm.",
+    ),
+    Pattern(
+        id="DX08", title="η_Al вне калибровки без plant-данных",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="predictor η_Al вне method.eta_al_range±0.05 под literature_fallback",
+        check=_check_dx08_eta_out_of_calibration,
+        suggestion=(
+            "η_Al вне литературного диапазона метода без plant-калибровки. "
+            "Возможно реальное отклонение plant — провести калибровку через "
+            "scripts/calibrate_eta_al.py."
+        ),
+    ),
+    Pattern(
+        id="DX09", title="Недостаточно данных для Bayesian-калибровки",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="plant_n_heats_for_method < min_heats_threshold (default 30)",
+        check=_check_dx09_insufficient_calibration_data,
+        suggestion=(
+            "Plant имеет < 30 плавок для метода — используется literature prior. "
+            "Накопите больше плавок для plant-specific калибровки."
+        ),
+    ),
+    Pattern(
+        id="DX10", title="Slag basicity вне исторического диапазона",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="current_slag_basicity вне historical_basicity_range (DORMANT)",
+        check=_check_dx10_basicity_extrapolation,
+        suggestion=(
+            "Basicity текущей плавки вне исторического диапазона — "
+            "η_Al prediction менее надёжна (экстраполяция)."
+        ),
+    ),
+    Pattern(
+        id="DX11", title="η_Al модель: coverage 90%CI < 85%",
+        phase=Phase.TRAINING, severity=Severity.HIGH,
+        description="steel_class=='deox_calibration' AND coverage_90_ci < 0.85",
+        check=_check_dx11_model_coverage_low,
+        suggestion=(
+            "Conformal coverage η_Al-модели < 85% — интервалы недостоверны "
+            "(M02-прецедент). Требуется conformal recalibration или больше данных."
+        ),
+    ),
+    Pattern(
+        id="DX12", title="Конфликт plant-posterior и global ML",
+        phase=Phase.DEOXIDATION, severity=Severity.MEDIUM,
+        description="|posterior_mu - global_mu| / posterior_sigma > 2 (logit-space)",
+        check=_check_dx12_posterior_global_conflict,
+        suggestion=(
+            "Plant-posterior конфликтует с global ML на >2σ — один из источников "
+            "систематически смещён. Проверьте данные плавок и обучающую выборку."
+        ),
     ),
 ]
 

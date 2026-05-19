@@ -131,6 +131,7 @@ from app.api.routers import active_learning as _active_learning_router  # noqa: 
 from app.api.routers import decisions as _decisions_router  # noqa: E402
 from app.api.routers import deox as _deox_router  # noqa: E402
 from app.api.routers import design as _design_router  # noqa: E402
+from app.api.routers import heats as _heats_router  # noqa: E402
 from app.api.routers import hypotheses as _hypotheses_router  # noqa: E402
 from app.api.routers import jobs as _jobs_router  # noqa: E402
 from app.api.routers import predict as _predict_router  # noqa: E402
@@ -143,6 +144,7 @@ app.include_router(_decisions_router.router, prefix="/api", tags=["decisions"])
 app.include_router(_system_router.router, prefix="/api/system", tags=["system"])
 app.include_router(_predict_router.router, prefix="/api", tags=["predict"])
 app.include_router(_deox_router.router, prefix="/api/deox", tags=["deox"])
+app.include_router(_heats_router.router, prefix="/api/deox", tags=["heats"])
 app.include_router(
     _active_learning_router.router,
     prefix="/api/active-learning",

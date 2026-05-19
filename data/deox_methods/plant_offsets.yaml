@@ -1,0 +1,7 @@
+# Plant-specific η_Al offset baselines (multi-plant synthetic + future real-data).
+# Used by EtaAlPredictor as numeric feature `plant_offset_baseline`.
+# Real-world deployment should retrain with calibrated offsets from heats.db.
+plants:
+  PLANT_A: 0.02
+  PLANT_B: 0.00
+  PLANT_C: -0.03

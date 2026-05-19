@@ -29,6 +29,14 @@ reports/*.pdf
 decision_log/*.db
 decision_log/price_snapshots/
 decision_log/deox_methods_snapshots/
+decision_log/etl_imports/*.json
+
+# Heat records runtime SQLite (schema.sql tracked, DB gitignored)
+data/heats/*.db
+
+# Plant-specific Bayesian η_Al calibrations (PR 5 — operational data, gitignored)
+data/deox_methods/calibrations/*.yaml
+!data/deox_methods/calibrations/.gitkeep
 
 # IDE
 .vscode/

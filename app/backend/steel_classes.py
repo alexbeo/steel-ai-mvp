@@ -17,7 +17,12 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STEEL_CLASSES_DIR = PROJECT_ROOT / "data" / "steel_classes"
-AVAILABLE_CLASS_IDS = ["pipe_hsla", "en10083_qt", "fatigue_carbon_steel"]
+AVAILABLE_CLASS_IDS = [
+    "pipe_hsla",
+    "en10083_qt",
+    "fatigue_carbon_steel",
+    "deox_calibration",
+]
 
 
 @dataclass
@@ -87,6 +92,7 @@ def get_synthetic_generator(generator_name: str) -> Callable:
     `fatigue_carbon_steel_real` returns REAL Agrawal NIMS data, not synthetic.
     """
     from app.backend.data_curator import (
+        generate_synthetic_deox_calibration_dataset,
         generate_synthetic_en10083_qt_dataset,
         generate_synthetic_hsla_dataset,
         load_real_agrawal_fatigue_dataset,
@@ -95,6 +101,7 @@ def get_synthetic_generator(generator_name: str) -> Callable:
         "pipe_hsla": generate_synthetic_hsla_dataset,
         "en10083_qt": generate_synthetic_en10083_qt_dataset,
         "fatigue_carbon_steel_real": load_real_agrawal_fatigue_dataset,
+        "deox_calibration": generate_synthetic_deox_calibration_dataset,
     }[generator_name]
 
 

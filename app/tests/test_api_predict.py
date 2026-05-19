@@ -140,7 +140,11 @@ def _midrange_composition(class_id: str) -> dict[str, float]:
 
 
 def test_list_steel_classes(client: TestClient) -> None:
-    """Endpoint returns the three registered profiles with feature_set."""
+    """Endpoint returns the four registered profiles with feature_set.
+
+    Включает virtual class ``deox_calibration`` (R-004 PR 4): не реальный
+    сорт стали, а process-feedback profile для калибровки η_Al модели.
+    """
     resp = client.get("/api/system/steel-classes")
     assert resp.status_code == 200
     payload = resp.json()
@@ -148,7 +152,12 @@ def test_list_steel_classes(client: TestClient) -> None:
     assert payload["count"] == len(payload["items"])
 
     ids = {item["id"] for item in payload["items"]}
-    assert ids == {"pipe_hsla", "en10083_qt", "fatigue_carbon_steel"}
+    assert ids == {
+        "pipe_hsla",
+        "en10083_qt",
+        "fatigue_carbon_steel",
+        "deox_calibration",
+    }
 
     # Shape sanity for one profile.
     hsla = next(item for item in payload["items"] if item["id"] == "pipe_hsla")

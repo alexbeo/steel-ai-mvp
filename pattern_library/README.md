@@ -344,6 +344,61 @@ Q: Если > 1 сек — есть ли caching / async processing / progress b
 
 ---
 
+## DX08-DX12: η_Al calibration quality gates (фаза DEOXIDATION / TRAINING)
+
+Эти паттерны (PR 13, R-005) защищают slag-aware ASIS deox advisory от непроверенных
+η_Al-предсказаний. Реализованы в `patterns.py`, ctx собирается в
+`app/api/routers/deox.py:_build_slag_aware_critic_ctx` (DEOXIDATION) и в
+`engine.py` TRAINING-ctx (DX11). Все проверки graceful: отсутствующий ключ → no-trigger.
+
+### DX08: η_Al вне калибровки без plant-данных (MEDIUM, DEOXIDATION)
+
+**Проблема:** predictor вернул η_Al вне литературного диапазона метода (`eta_al_range ± 0.05`),
+но при этом источник — `literature_fallback` (нет ни plant-, ни ML-калибровки). Значит
+отклонение ничем не обосновано: либо баг, либо реальный plant-drift, который надо
+зафиксировать калибровкой. Manual overrides покрывает DX06 — здесь источник `user_override`
+игнорируется; источники `plant_only`/`mixed`/`global_only` оправдывают deviation и молчат.
+
+**Что делать:** провести plant-specific калибровку через `scripts/calibrate_eta_al.py`.
+
+### DX09: недостаточно данных для Bayesian-калибровки (MEDIUM, DEOXIDATION)
+
+**Проблема:** у plant накоплено `< min_heats_threshold` (default 30) плавок для выбранного
+метода, поэтому posterior сводится к literature prior. Advisory работает, но не использует
+plant-specific опыт — пользователь должен это понимать.
+
+**Что делать:** накопить больше плавок; до этого относиться к η как к литературной оценке.
+
+### DX10: slag basicity вне исторического диапазона (MEDIUM, DEOXIDATION — DORMANT)
+
+**Проблема:** basicity текущей плавки выходит за `historical_basicity_range`, на котором
+обучалась η_Al-модель → prediction экстраполирует. Ships **DORMANT** в PR 13: ключи
+`current_slag_basicity` / `historical_basicity_range` ещё не wired в ctx-builder, поэтому
+check всегда молчит. Активируется автоматически, когда basicity появится в ctx.
+
+**Что делать (когда активен):** трактовать η_Al-prediction как менее надёжную.
+
+### DX11: η_Al модель — coverage 90% CI < 85% (HIGH, TRAINING)
+
+**Проблема:** conformal coverage интервалов η_Al-модели ниже 85% (overconfident) →
+интервалы недостоверны, деплой блокируется. Прямой M02-прецедент, но gate'ится на
+`steel_class == "deox_calibration"` (HSLA/fatigue остаются за M02) и срабатывает только
+на низком coverage — для on-line advisory underconfident интервалы менее критичны.
+
+**Что делать:** conformal recalibration или больше калибровочных данных.
+
+### DX12: конфликт plant-posterior и global ML (MEDIUM, DEOXIDATION)
+
+**Проблема:** plant-posterior расходится с global ML-предсказанием более чем на 2σ в
+logit-space (`z = |μ_plant − μ_global| / σ_plant > 2`). Один из источников систематически
+смещён. **Partial-dormant:** `EtaPrediction` не несёт global-μ отдельным полем — он
+реконструируется из `metadata["disagreement_logit"]` только для `source == "mixed"`. Для
+`plant_only`/`global_only`/`literature_fallback` сравнение невозможно → DX12 молчит.
+
+**Что делать:** проверить данные plant-плавок и обучающую выборку global-модели.
+
+---
+
 ## Как Critic использует эту библиотеку
 
 ```python

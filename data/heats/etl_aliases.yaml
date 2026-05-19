@@ -1,0 +1,233 @@
+# Heat Record column aliases for Excel ETL.
+# Auto-detector matches normalized excel column names (lowercase, alnum_)
+# against these aliases. Operator can override via --mapping-file in CLI.
+# Maintained as alias list per field — synonyms in RU/EN/PL/DE/IT (transliterated).
+# Aliases are pre-normalized at load time (_normalize_column_name).
+
+aliases:
+  # ---------- Identification ----------
+  plant_id:
+    - plant
+    - plant_id
+    - facility
+    - cex
+    - zavod
+    - konverter
+    - werk
+    - huta
+    - acciaieria
+  heat_id:
+    - heat_id
+    - heat_number
+    - heat_no
+    - heat
+    - plavka
+    - nomer_plavki
+    - schmelze_nr
+    - wytop
+  steel_class_id:
+    - steel_class
+    - steel_class_id
+    - grade
+    - marka_stali
+    - marka
+    - steel_grade
+    - standart
+    - stahlsorte
+
+  # ---------- Heat parameters ----------
+  steel_mass_ton:
+    - steel_mass_ton
+    - mass_t
+    - massa_stali
+    - massa_t
+    - ves_stali
+    - tonnage
+    - steel_weight
+    - schmelze_gewicht
+  o_a_initial_ppm:
+    - o_initial
+    - o_a_initial
+    - o_initial_ppm
+    - kislorod_do
+    - kislorod_nachalo
+    - o_aktivnost_nachalo
+    - o_a_before
+    - oxygen_before_ppm
+  o_a_after_ppm:
+    - o_after
+    - o_final
+    - o_finish_ppm
+    - kislorod_posle
+    - o_a_after
+    - oxygen_after_ppm
+  t_tap_c:
+    - t_tap
+    - tap_temperature
+    - temperatura_sliva
+    - temp_tap_c
+    - schoepf_temp
+  t_lf_arrival_c:
+    - t_lf
+    - lf_arrival_temp
+    - temp_lf
+    - temperatura_lf
+    - temperatura_lf_pribytie
+  t_al_addition_c:
+    - t_al
+    - t_al_addition
+    - temp_al_addition
+    - temperatura_podachi_al
+    - al_addition_temp
+  al_added_kg:
+    - al_added
+    - al_kg
+    - al_mass
+    - alyuminiy_podacha
+    - alyuminiy_kg
+    - aluminum_added
+    - aluminium_kg
+    - al_input
+  al_residual_pct:
+    - al_residual
+    - al_resid_pct
+    - alyuminiy_ostatok
+    - residual_al
+    - al_final_pct
+
+  # ---------- Slag ----------
+  slag_mass_kg:
+    - slag_mass
+    - slag_kg
+    - massa_shlaka
+    - shlak_kg
+    - schlacke_kg
+  carry_over_slag_kg_per_t:
+    - carry_over_slag
+    - carryover_slag_kg_per_t
+    - perenos_shlaka
+    - carry_slag
+  slag_feo_pct:
+    - feo_pct
+    - feo
+    - feo_slag
+    - feo_shlaka
+    - feo_in_slag
+  slag_mno_pct:
+    - mno_pct
+    - mno
+    - mno_shlaka
+  slag_sio2_pct:
+    - sio2_pct
+    - sio2
+    - kremnezem_shlaka
+    - sio2_slag
+  slag_cao_pct:
+    - cao_pct
+    - cao
+    - izvest_shlaka
+    - cao_slag
+  slag_mgo_pct:
+    - mgo_pct
+    - mgo
+    - mgo_slag
+  slag_al2o3_pct:
+    - al2o3_pct
+    - al2o3
+    - korund_shlaka
+    - al2o3_slag
+
+  # ---------- Composition ----------
+  c_pct:
+    - c
+    - c_pct
+    - carbon_pct
+    - uglerod
+  mn_pct:
+    - mn
+    - mn_pct
+    - marganec
+    - manganese_pct
+  si_pct:
+    - si
+    - si_pct
+    - kremniy
+    - silicon_pct
+  s_pct:
+    - s
+    - s_pct
+    - sera
+    - sulfur_pct
+  p_pct:
+    - p
+    - p_pct
+    - fosfor
+    - phosphorus_pct
+
+  # ---------- Method / process ----------
+  method_id:
+    - method
+    - method_id
+    - metod_podachi
+    - addition_method
+    - method_type
+  addition_timing:
+    - addition_timing
+    - timing
+    - vremya_podachi
+    - al_timing
+  carrier_gas:
+    - carrier_gas
+    - gas
+    - gaz_nositel
+    - ar_or_n2
+  co_deox_fesi_kg:
+    - fesi_kg
+    - fesi_added
+    - fesi_mass
+    - fesi_podacha
+    - fesi
+  dt_to_al_min:
+    - dt_to_al
+    - delta_t_al
+    - vremya_do_al
+    - minutes_to_al
+  t_drying_c:
+    - t_drying
+    - drying_temp
+    - temperatura_sushki
+    - drying_temperature_c
+  ar_stir_nm3:
+    - ar_stir
+    - ar_volume_nm3
+    - argon_produvka
+    - argon_volume
+  vacuum_treatment:
+    - vacuum
+    - vd_rh
+    - vakuum
+    - vakuum_obrabotka
+  refractory_heat_count:
+    - refractory_count
+    - ladle_age
+    - ladle_heat_count
+    - vozrast_kovsha
+    - kampaniya_futerovki
+
+  # ---------- Outcome ----------
+  eta_al_effective:
+    - eta_al
+    - eta_efficiency
+    - effektivnost_al
+    - al_yield_pct
+  quality_flag:
+    - quality
+    - quality_flag
+    - accept_reject
+    - kachestvo
+  notes:
+    - notes
+    - comments
+    - primechanie
+    - kommentariy
+    - bemerkung
