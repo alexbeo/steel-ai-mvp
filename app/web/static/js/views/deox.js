@@ -37,6 +37,7 @@ const SUBTABS = [
   { id: 'ai',       label: 'AI советник + критик' },
   { id: 'optimize', label: '🎯 Оптимизация метода' },
   { id: 'eta_calib', label: '🎯 Калибровка η_Al' },
+  { id: 'shadow',   label: '🌓 Shadow-валидация' },
   { id: 'history',  label: '📋 История плавок' },
 ];
 
@@ -118,6 +119,21 @@ const state = {
     modelStatus: null,    // {model_present, r2_test, coverage_90_ci, ...}
     calibrations: [],     // [{plant_id, method_id, ...}]
     running: false,
+  },
+  // S4 (Phase 2) — «🌓 Shadow-валидация» sub-tab. Retrospective AI-vs-actual
+  // Al dosing comparison. The form picks a ``source`` (heats_db | synthetic);
+  // ``running`` blocks the run button while POST /api/deox/shadow/run is in
+  // flight; ``result`` holds the last response payload (stats + savings +
+  // per-stratum + compared sample). ``reportLoaded`` gates the one-shot GET
+  // /api/deox/shadow/report on first activation (graceful 404 → empty state).
+  shadow: {
+    running: false,
+    error: null,
+    result: null,
+    reportLoaded: false,
+    source: 'heats_db',
+    plantId: '',
+    nSynthetic: 500,
   },
 };
 
@@ -3330,6 +3346,283 @@ function renderEtaCalibSubtab() {
   );
 }
 
+// ──────────────────── shadow validation sub-tab (S4) ────────────────────
+//
+// Retrospective AI-vs-actual Al dosing comparison. Two endpoints feed it:
+//   POST /api/deox/shadow/run    → {stats, savings_eur, is_synthetic, ...}
+//   GET  /api/deox/shadow/report → latest persisted report JSON (404 → empty)
+//
+// The form chooses source (heats_db | synthetic), an optional plant filter
+// and (for synthetic) the heat count. The dashboard renders a hypothesis
+// badge, KPI cells, an optional synthetic banner, a per-stratum table and the
+// stats disclaimers. heats_db with > limit outcomes returns 400 — surfaced as
+// an error toast pointing at the CLI script.
+
+async function loadShadowReportOnce() {
+  if (state.shadow.reportLoaded) return;
+  state.shadow.reportLoaded = true;
+  try {
+    const resp = await apiFetch('/api/deox/shadow/report');
+    // The persisted report mirrors the /run payload shape (stats + savings),
+    // so we can hydrate the same dashboard from it on first activation.
+    if (resp && resp.stats) {
+      state.shadow.result = {
+        stats: resp.stats,
+        savings_eur: resp.savings_eur,
+        al_price_eur_per_kg: resp.al_price_eur_per_kg,
+        is_synthetic: !!resp.is_synthetic,
+        n_total: resp.stats.n_total,
+        n_compared: resp.stats.n_compared,
+        report_html: resp.report_html_path || null,
+        report_json: resp.report_json_path || null,
+      };
+    }
+  } catch (err) {
+    // 404 = no report yet → empty state, not an error. Re-raise others.
+    if (!(err instanceof ApiError && err.status === 404)) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      state.shadow.error = `Не удалось загрузить shadow-отчёт: ${detail}`;
+    }
+  }
+}
+
+function readShadowForm() {
+  if (!elements || !elements.formContainer) return;
+  const root = elements.formContainer;
+  const src = root.querySelector('#deox-shadow-source');
+  const plant = root.querySelector('#deox-shadow-plant');
+  const nsyn = root.querySelector('#deox-shadow-nsyn');
+  if (src) state.shadow.source = src.value;
+  if (plant) state.shadow.plantId = plant.value.trim();
+  if (nsyn) {
+    const v = Number(nsyn.value);
+    if (Number.isFinite(v) && v >= 10) state.shadow.nSynthetic = Math.round(v);
+  }
+}
+
+async function runShadow() {
+  if (state.shadow.running) return;
+  readShadowForm();
+  state.shadow.running = true;
+  state.shadow.error = null;
+  clearError();
+  renderShadowSubtab();
+  const body = {
+    source: state.shadow.source,
+    n_synthetic_heats: state.shadow.nSynthetic,
+    plant_id: state.shadow.plantId || null,
+    save_report: true,
+  };
+  try {
+    const resp = await apiFetch('/api/deox/shadow/run', {
+      method: 'POST',
+      body,
+    });
+    state.shadow.result = resp || null;
+    showInfo(
+      `Shadow-валидация завершена: сравнено ${resp.n_compared} из ` +
+      `${resp.n_total} плавок.`,
+    );
+  } catch (err) {
+    const detail = err instanceof ApiError ? err.message : String(err);
+    showError(`Ошибка shadow-валидации: ${detail}`);
+  } finally {
+    state.shadow.running = false;
+    renderShadowSubtab();
+  }
+}
+
+function renderShadowForm() {
+  const isSynthetic = state.shadow.source === 'synthetic';
+
+  const sourceSel = el('select', {
+    class: 'deox-select',
+    id: 'deox-shadow-source',
+    onChange: (e) => {
+      state.shadow.source = e.target.value;
+      renderShadowSubtab();   // toggle n_synthetic visibility
+    },
+  });
+  for (const [val, label] of [
+    ['heats_db', 'heats.db (реальные плавки)'],
+    ['synthetic', 'Синтетика (демо механики)'],
+  ]) {
+    const opt = el('option', { value: val }, label);
+    if (val === state.shadow.source) opt.selected = true;
+    sourceSel.append(opt);
+  }
+  const sourceField = el('div', { class: 'deox-field' },
+    el('label', { class: 'deox-field-label', for: 'deox-shadow-source' }, 'Источник'),
+    sourceSel);
+
+  const plantInput = el('input', {
+    class: 'deox-input',
+    id: 'deox-shadow-plant',
+    type: 'text',
+    placeholder: 'все цеха',
+    value: state.shadow.plantId,
+  });
+  const plantField = el('div', { class: 'deox-field' },
+    el('label', { class: 'deox-field-label', for: 'deox-shadow-plant' }, 'Фильтр по цеху'),
+    plantInput);
+
+  const fields = [sourceField, plantField];
+  if (isSynthetic) {
+    const nInput = el('input', {
+      class: 'deox-input mono',
+      id: 'deox-shadow-nsyn',
+      type: 'number',
+      min: '10',
+      max: '2000',
+      step: '10',
+      value: String(state.shadow.nSynthetic),
+    });
+    fields.push(el('div', { class: 'deox-field' },
+      el('label', { class: 'deox-field-label', for: 'deox-shadow-nsyn' },
+        'Число синтетических плавок'),
+      nInput));
+  }
+
+  const heading = el('div', { class: 'deox-form-heading' },
+    'Shadow-валидация — AI-доза Al vs факт (retrospective)');
+  const subnote = el('div', { class: 'deox-ai-subnote' },
+    'Для каждой исторической плавки модель пересчитывает рекомендованную ' +
+    'дозу Al и сравнивает с фактической. Гипотеза: AI снижает Al на ≥10% ' +
+    'без потери качества (target O_a + residual [Al] в spec). Синтетика — ' +
+    'тавтологична (η пересчитывается своей же формулой), показывает только ' +
+    'механику.');
+  const grid = el('div', { class: 'deox-form-grid' }, ...fields);
+  const runBtn = el('button', {
+    class: 'btn primary',
+    type: 'button',
+    onClick: () => runShadow(),
+    ...(state.shadow.running ? { disabled: 'disabled' } : {}),
+  }, state.shadow.running ? 'Гоняю…' : 'Запустить shadow-валидацию');
+  const actions = el('div', { class: 'deox-actions' }, runBtn);
+
+  elements.formContainer.replaceChildren(heading, subnote, grid, actions);
+}
+
+function renderShadowResult() {
+  const res = state.shadow.result;
+  if (!res || !res.stats) {
+    elements.resultContainer.replaceChildren(
+      el('div', { class: 'deox-result' },
+        el('div', { class: 'deox-ai-subnote' },
+          'Результатов пока нет. Запустите shadow-валидацию.')));
+    return;
+  }
+  const s = res.stats;
+  const blocks = [];
+
+  const met = !!s.hypothesis_met;
+  const badge = el('div', {
+    class: met ? 'deox-warning' : 'deox-warning high',
+    style: {
+      padding: '6px 12px',
+      borderRadius: '6px',
+      fontWeight: '600',
+      display: 'inline-block',
+      ...(met ? { background: 'rgba(42,157,74,0.18)', color: '#2a9d4a' } : {}),
+    },
+  }, met
+    ? 'Гипотеза −10% Al: ПОДТВЕРЖДЕНА'
+    : 'Гипотеза −10% Al: НЕ подтверждена');
+  blocks.push(el('div', { class: 'deox-form-heading' }, 'Результат shadow-валидации'));
+  blocks.push(badge);
+
+  if (res.is_synthetic) {
+    blocks.push(el('div', { class: 'deox-warning medium', style: { marginTop: '8px' } },
+      '⚠️ Синтетические данные: AI пересчитывает свою η-формулу (тавтология). ' +
+      'Реальная валидация — на heats.db.'));
+  }
+
+  const ciLabel = (s.ci_low == null || s.ci_high == null
+    || Number.isNaN(s.ci_low) || Number.isNaN(s.ci_high))
+    ? '—'
+    : `[${formatNumber(s.ci_low, 1)}, ${formatNumber(s.ci_high, 1)}]`;
+  const pLabel = s.wilcoxon_p == null
+    ? '—'
+    : Number(s.wilcoxon_p).toExponential(2);
+  const grid = el('div', { class: 'deox-result-grid' },
+    cell('median Δ%, quality-pass', s.median_delta_pct == null
+      || Number.isNaN(s.median_delta_pct)
+      ? '—' : `${formatNumber(s.median_delta_pct, 1)} %`),
+    cell('95% bootstrap CI', ciLabel),
+    cell('Wilcoxon p', pLabel),
+    cell('Al сэкономлено', s.total_al_saved_kg == null
+      || Number.isNaN(s.total_al_saved_kg)
+      ? '—' : `${formatNumber(s.total_al_saved_kg, 0)} kg`),
+    cell('€ экономии', res.savings_eur == null
+      ? '—' : `€${formatNumber(res.savings_eur, 0)}`),
+    cell('quality-pass / compared',
+      `${s.n_quality_pass} / ${s.n_compared}`),
+  );
+  blocks.push(grid);
+
+  // Per-stratum table.
+  const strata = Array.isArray(s.per_stratum) ? s.per_stratum : [];
+  if (strata.length > 0) {
+    const header = el('tr', {},
+      el('th', {}, 'Цех'),
+      el('th', {}, 'Метод'),
+      el('th', {}, 'N'),
+      el('th', {}, 'median Δ%'),
+      el('th', {}, '95% CI'),
+      el('th', {}, 'Wilcoxon p'),
+    );
+    const rows = strata.map((st) => el('tr', {},
+      el('td', {}, escapeHtml(st.plant_id)),
+      el('td', { class: 'mono' }, escapeHtml(st.method_id)),
+      el('td', { class: 'mono' }, String(st.n)),
+      el('td', { class: 'mono' }, st.median_delta_pct == null
+        || Number.isNaN(st.median_delta_pct)
+        ? '—' : `${formatNumber(st.median_delta_pct, 1)} %`),
+      el('td', { class: 'mono' },
+        (st.ci_low == null || st.ci_high == null
+          || Number.isNaN(st.ci_low) || Number.isNaN(st.ci_high))
+          ? '—'
+          : `[${formatNumber(st.ci_low, 1)}, ${formatNumber(st.ci_high, 1)}]`),
+      el('td', { class: 'mono' }, st.wilcoxon_p == null
+        ? '—' : Number(st.wilcoxon_p).toExponential(2)),
+    ));
+    blocks.push(el('div', { class: 'deox-form-heading' }, 'Стратификация plant × method'));
+    blocks.push(el('table', { class: 'candidate-table' },
+      el('thead', {}, header),
+      el('tbody', {}, ...rows)));
+  }
+
+  // Disclaimers / notes.
+  const notes = Array.isArray(s.notes) ? s.notes : [];
+  if (notes.length > 0) {
+    blocks.push(el('div', { class: 'deox-warning low', style: { marginTop: '8px' } },
+      el('b', {}, 'Ограничения интерпретации:'),
+      el('ul', { style: { margin: '4px 0 0', paddingLeft: '18px' } },
+        ...notes.map((n) => el('li', {}, escapeHtml(n))))));
+  }
+
+  // Report link / path.
+  if (res.report_html) {
+    blocks.push(el('div', { class: 'deox-ai-subnote', style: { marginTop: '8px' } },
+      'HTML-отчёт сохранён: ',
+      el('span', { class: 'mono' }, escapeHtml(res.report_html))));
+  }
+
+  elements.resultContainer.replaceChildren(
+    el('div', { class: 'deox-result' }, ...blocks));
+}
+
+function renderShadowSubtab() {
+  if (!elements) return;
+  renderShadowForm();
+  if (state.shadow.error) {
+    elements.resultContainer.replaceChildren(
+      el('div', { class: 'deox-warning high' }, state.shadow.error));
+    return;
+  }
+  renderShadowResult();
+}
+
 function setSubtab(id) {
   if (state.subtab === id) return;
   // Block switching away from a running AI cycle — the form holds the
@@ -3427,6 +3720,15 @@ function setSubtab(id) {
         if (state.subtab === 'eta_calib') renderEtaCalibSubtab();
       });
     }
+  } else if (id === 'shadow') {
+    // Render skeleton + hydrate from the latest persisted report on first
+    // activation (graceful 404 → empty state).
+    renderShadowSubtab();
+    if (!state.shadow.reportLoaded) {
+      loadShadowReportOnce().then(() => {
+        if (state.subtab === 'shadow') renderShadowSubtab();
+      });
+    }
   } else if (id === 'history') {
     // Render skeleton + fetch data on first activation. Re-renders happen
     // inside loadHistoryDataOnce / loadHistoryList finally{} blocks.
@@ -3443,7 +3745,7 @@ function setSubtab(id) {
   else if (id === 'compare') renderCompareResult();
   else if (id === 'ai') renderAiResult();
   else if (id === 'optimize') renderOptimizeResult();
-  // ``history`` / ``eta_calib`` paint their own resultContainer.
+  // ``history`` / ``eta_calib`` / ``shadow`` paint their own resultContainer.
 }
 
 function onModelChange(modelId) {
@@ -3528,6 +3830,13 @@ async function loadAll() {
       if (!state.etaCalib.loaded) {
         loadEtaCalibOnce().then(() => {
           if (state.subtab === 'eta_calib') renderEtaCalibSubtab();
+        });
+      }
+    } else if (state.subtab === 'shadow') {
+      renderShadowSubtab();
+      if (!state.shadow.reportLoaded) {
+        loadShadowReportOnce().then(() => {
+          if (state.subtab === 'shadow') renderShadowSubtab();
         });
       }
     } else if (state.subtab === 'history') {

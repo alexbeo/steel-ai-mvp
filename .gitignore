@@ -24,6 +24,7 @@ models/*/
 # Reports
 reports/*.html
 reports/*.pdf
+reports/shadow_*.json
 
 # Decision log (SQLite) + runtime price snapshots (per-run audit YAMLs)
 decision_log/*.db

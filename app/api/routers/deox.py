@@ -51,7 +51,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -1696,3 +1696,215 @@ def run_calibration(req: CalibrationRunRequest) -> dict[str, Any]:
             for r in results
         ],
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Shadow validation (Phase 2 S4) — retrospective AI-vs-actual Al dosing.
+#
+#   POST /api/deox/shadow/run    — run comparison sync (heats_db | synthetic)
+#   GET  /api/deox/shadow/report — latest persisted shadow report JSON
+#
+# Runs synchronously with a hard ``limit`` guard (default 2000 heats). If the
+# heats DB holds more outcomes than ``limit`` we return 400 with a CLI hint
+# rather than turning this into a background job — keeps the surface small for
+# the MVP. The full unbounded run lives in scripts/generate_shadow_report.py.
+#
+# Predictor reuses the existing trained posteriors via
+# ``EtaAlPredictor(calibrator=EtaAlCalibrator())`` — we never re-calibrate here.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ShadowRunRequest(BaseModel):
+    """Body for ``POST /api/deox/shadow/run``.
+
+    ``source=heats_db`` compares against persisted outcomes (subject to the
+    ``limit`` guard); ``source=synthetic`` generates a self-contained demo
+    batch (η re-prediction is tautological — flagged ``is_synthetic`` in the
+    response and the report disclaimers).
+    """
+
+    source: Literal["heats_db", "synthetic"] = "heats_db"
+    n_synthetic_heats: int = Field(500, ge=10, le=2000)
+    plant_id: str | None = Field(None, max_length=64)
+    limit: int = Field(2000, ge=1, le=20000)
+    al_price_eur_per_kg: float = Field(2.40, gt=0)
+    save_report: bool = True
+    target_reduction_pct: float = Field(10.0, gt=0)
+
+    model_config = {"protected_namespaces": ()}
+
+
+def _nan_to_none(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/±inf) with ``None``.
+
+    ``ShadowStats`` legitimately carries NaN for the empty / no-quality-pass
+    edge cases (median_delta_pct, ci_low/high). ``SafeJSONResponse`` renders
+    with ``allow_nan=False``, so we sanitise the payload to JSON-null before it
+    reaches the encoder. The UI already treats null + NaN as "—".
+    """
+    import math
+
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _nan_to_none(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_nan_to_none(v) for v in obj]
+    return obj
+
+
+def _synthetic_heats_for_shadow(n: int) -> list:
+    """Generate synthetic HeatRecords with derived ``al_added_kg`` for the demo.
+
+    The calibration generator emits η + slag/process features but no Al charge;
+    we back-derive a plausible actual Al addition from the mass-balance O removal
+    and the synthetic η so the shadow comparison has an ``al_actual_kg`` to beat.
+    """
+    from app.backend.data_curator import (
+        generate_synthetic_deox_calibration_dataset,
+    )
+    from app.backend.heat_records import HeatRecord
+    from app.backend.slag_aware_deox import AL_TO_O_MASS_RATIO
+
+    df = generate_synthetic_deox_calibration_dataset(n_heats=n)
+    records = []
+    for _, row in df.iterrows():
+        o_init = float(row["o_a_initial_ppm"])
+        o_after = 5.0
+        mass = float(row["steel_mass_ton"])
+        eta = float(row["eta_al_effective"])
+        o_removed = (o_init - o_after) / 1e6 * mass * 1000
+        al_added = o_removed * AL_TO_O_MASS_RATIO / eta if eta > 0 else 0
+        records.append(
+            HeatRecord(
+                source="synthetic",
+                plant_id=str(row["plant_id"]),
+                steel_mass_ton=mass,
+                o_a_initial_ppm=o_init,
+                o_a_after_ppm=o_after,
+                al_added_kg=al_added,
+                method_id=str(row["method_id"]),
+                eta_al_effective=eta,
+                al_residual_pct=0.025,
+                slag_feo_pct=float(row["slag_feo_pct"]),
+                slag_mass_kg=float(row["slag_mass_kg"]),
+                t_al_addition_c=float(row["t_al_addition_c"]),
+            )
+        )
+    return records
+
+
+@router.post(
+    "/shadow/run",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def shadow_run(req: ShadowRunRequest) -> dict[str, Any]:
+    """Run shadow validation synchronously. ``source=heats_db|synthetic``."""
+    from dataclasses import asdict as _asdict
+
+    from app.backend.eta_al_calibration import EtaAlCalibrator
+    from app.backend.eta_al_predictor import EtaAlPredictor
+    from app.backend.heat_records import count_heats, list_heats
+    from app.backend.shadow_reporter import (
+        _compute_savings_eur,
+        generate_shadow_report,
+    )
+    from app.backend.shadow_stats import compute_shadow_stats
+    from app.backend.shadow_validation import run_shadow_comparison
+
+    predictor = EtaAlPredictor(calibrator=EtaAlCalibrator())
+    is_synthetic = req.source == "synthetic"
+
+    if is_synthetic:
+        heats = _synthetic_heats_for_shadow(req.n_synthetic_heats)
+    else:
+        n = count_heats(plant_id=req.plant_id)
+        if n > req.limit:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Плавок с outcome ({n}) > limit ({req.limit}). "
+                    f"Используйте scripts/generate_shadow_report.py "
+                    f"--source heats_db для полного прогона без лимита."
+                ),
+            )
+        heats = list_heats(plant_id=req.plant_id, has_outcome=True, limit=req.limit)
+
+    comparisons = run_shadow_comparison(heats, predictor)
+    stats = compute_shadow_stats(
+        comparisons, target_reduction_pct=req.target_reduction_pct
+    )
+
+    report_html = report_json = None
+    if req.save_report:
+        h, j = generate_shadow_report(
+            comparisons,
+            stats,
+            al_price_eur_per_kg=req.al_price_eur_per_kg,
+            is_synthetic=is_synthetic,
+        )
+        # Prefer repo-relative paths; fall back to absolute if outside the tree.
+        try:
+            report_html = str(h.relative_to(PROJECT_ROOT))
+            report_json = str(j.relative_to(PROJECT_ROOT))
+        except ValueError:
+            report_html, report_json = str(h), str(j)
+
+    compared = [
+        _asdict(c) for c in comparisons if c.skip_reason is None
+    ][:100]
+    savings = _compute_savings_eur(stats, req.al_price_eur_per_kg)
+    return _nan_to_none(
+        {
+            "stats": _asdict(stats),
+            "savings_eur": savings,
+            "al_price_eur_per_kg": req.al_price_eur_per_kg,
+            "is_synthetic": is_synthetic,
+            "n_total": stats.n_total,
+            "n_compared": stats.n_compared,
+            "report_html": report_html,
+            "report_json": report_json,
+            "compared_sample": compared,
+        }
+    )
+
+
+@router.get(
+    "/shadow/report",
+    response_class=SafeJSONResponse,
+    response_model=None,
+)
+def shadow_report(report_id: str | None = None) -> dict[str, Any]:
+    """Return the latest persisted shadow report JSON (or one matching id)."""
+    import json
+
+    from app.backend import shadow_reporter
+
+    reports_dir = shadow_reporter.REPORTS_DIR
+    if not reports_dir.exists():
+        raise HTTPException(status_code=404, detail="Нет shadow-отчётов")
+    jsons = sorted(
+        reports_dir.glob("shadow_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if report_id:
+        jsons = [p for p in jsons if report_id in p.name]
+    if not jsons:
+        raise HTTPException(status_code=404, detail="Нет shadow-отчётов")
+    latest = jsons[0]
+    data = json.loads(latest.read_text(encoding="utf-8"))
+    data["report_json_path"] = (
+        str(latest.relative_to(PROJECT_ROOT))
+        if PROJECT_ROOT in latest.parents
+        else str(latest)
+    )
+    html_candidate = latest.with_suffix(".html")
+    if html_candidate.exists():
+        data["report_html_path"] = (
+            str(html_candidate.relative_to(PROJECT_ROOT))
+            if PROJECT_ROOT in html_candidate.parents
+            else str(html_candidate)
+        )
+    return data
